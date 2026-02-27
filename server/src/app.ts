@@ -13,6 +13,7 @@ import { pingRoutes } from './routes/ping.js';
 import { settingsRoutes } from './routes/settings.js';
 import { userRoutes } from './routes/user.js';
 import { wsRoutes } from './routes/ws.js';
+import { keyboardRoutes } from './routes/keyboard.js';
 
 export async function buildApp() {
   const app = Fastify({
@@ -46,6 +47,7 @@ export async function buildApp() {
   await app.register(settingsRoutes);
   await app.register(userRoutes);
   await app.register(wsRoutes);
+  await app.register(keyboardRoutes);
 
   return app;
 }

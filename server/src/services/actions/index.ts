@@ -7,6 +7,9 @@ import type Anthropic from '@anthropic-ai/sdk';
 import { GmailService, GMAIL_TOOLS } from './gmail.js';
 import { CalendarService, CALENDAR_TOOLS } from './calendar.js';
 import { CONTACTS_TOOLS, isDeviceSideTool, formatDeviceExecRequest } from './contacts.js';
+import { getWeather } from './weather.js';
+import { webSearch } from './webSearch.js';
+import { buildAppUrl } from './appLauncher.js';
 
 // All available tools
 export function getAllTools(): Anthropic.Tool[] {
@@ -110,16 +113,19 @@ export class ActionRunner {
         return { result: await this.calendar.executeTool(userId, toolName, input) };
 
       case 'get_weather':
-        return { result: await this.getWeather(input.city as string, (input.days as number) ?? 1) };
+        return { result: await getWeather({ city: input.city as string, days: (input.days as number) ?? 1 }) };
 
       case 'web_search':
-        return { result: `[Recherche web pour "${input.query}" — non implémenté]` };
+        return { result: await webSearch({ query: input.query as string }) };
 
-      case 'open_app':
+      case 'open_app': {
+        const appResult = buildAppUrl(input.app as string, input as Record<string, string>);
+        if (!appResult) return { result: `App "${input.app}" non trouvée dans le catalogue.` };
         return {
-          result: `Ouverture de ${input.app as string}`,
-          deviceExec: { action: 'open_app', params: input },
+          result: `Ouverture de ${appResult.appName}`,
+          deviceExec: { action: 'open_url', params: { url: appResult.url, app: appResult.appName } },
         };
+      }
 
       case 'create_reminder':
         return { result: `Rappel créé : "${input.text}" pour le ${input.datetime}` };
@@ -129,42 +135,5 @@ export class ActionRunner {
     }
   }
 
-  private async getWeather(city: string, days: number): Promise<string> {
-    try {
-      // Open-Meteo geocoding
-      const geoResponse = await fetch(
-        `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=fr`,
-      );
-      const geoData = await geoResponse.json() as { results?: { latitude: number; longitude: number; name: string }[] };
 
-      if (!geoData.results?.length) {
-        return `Ville "${city}" non trouvée.`;
-      }
-
-      const { latitude, longitude, name } = geoData.results[0]!;
-
-      // Weather data
-      const weatherResponse = await fetch(
-        `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,weather_code,wind_speed_10m&daily=weather_code,temperature_2m_max,temperature_2m_min&forecast_days=${days}&timezone=Europe/Paris`,
-      );
-      const weather = await weatherResponse.json() as {
-        current: { temperature_2m: number; weather_code: number; wind_speed_10m: number };
-        daily?: { time: string[]; temperature_2m_max: number[]; temperature_2m_min: number[]; weather_code: number[] };
-      };
-
-      const current = weather.current;
-      let result = `Météo à ${name} : ${current.temperature_2m}°C, vent ${current.wind_speed_10m} km/h`;
-
-      if (days > 1 && weather.daily) {
-        result += '\nPrévisions :';
-        for (let i = 0; i < Math.min(days, weather.daily.time.length); i++) {
-          result += `\n• ${weather.daily.time[i]} : ${weather.daily.temperature_2m_min[i]}°-${weather.daily.temperature_2m_max[i]}°C`;
-        }
-      }
-
-      return result;
-    } catch (error) {
-      return `Erreur météo: ${error instanceof Error ? error.message : 'inconnue'}`;
-    }
-  }
 }

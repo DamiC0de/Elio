@@ -1,5 +1,12 @@
+import { supabase } from './supabase';
+
 // VPS IP for dev, will be replaced by domain later
 const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://72.60.155.227:4000';
+
+async function getAuthToken(): Promise<string | null> {
+  const { data } = await supabase.auth.getSession();
+  return data.session?.access_token ?? null;
+}
 
 interface ApiOptions {
   method?: string;
@@ -14,8 +21,9 @@ export async function apiCall<T>(path: string, options: ApiOptions = {}): Promis
     'Content-Type': 'application/json',
   };
 
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
+  const authToken = token ?? await getAuthToken();
+  if (authToken) {
+    headers['Authorization'] = `Bearer ${authToken}`;
   }
 
   const response = await fetch(`${API_BASE_URL}${path}`, {

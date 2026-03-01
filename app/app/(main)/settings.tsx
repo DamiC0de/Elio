@@ -1,5 +1,5 @@
 /**
- * EL-014 — Settings Screen (full)
+ * EL-014 — Settings Screen (dark mode, Diva)
  */
 import React from 'react';
 import { ScrollView, Alert, Linking, StyleSheet } from 'react-native';
@@ -7,7 +7,7 @@ import { Screen } from '../../components/ui/Screen';
 import { Button } from '../../components/ui/Button';
 import { SettingRow, SettingToggle, SettingSelect, SettingSectionHeader } from '../../components/SettingRow';
 import { useSettings } from '../../hooks/useSettings';
-import { colors } from '../../constants/colors';
+import { useTheme } from '../../constants/theme';
 import { supabase } from '../../lib/supabase';
 import { router } from 'expo-router';
 
@@ -30,6 +30,7 @@ const WAKE_WORD_OPTIONS = [
 ];
 
 export default function SettingsScreen() {
+  const theme = useTheme();
   const { settings, loading, updatePersonality, updateSetting } = useSettings();
 
   const handleLogout = () => {
@@ -62,7 +63,6 @@ export default function SettingsScreen() {
                 text: 'Oui, supprimer',
                 style: 'destructive',
                 onPress: async () => {
-                  // TODO: Call DELETE /api/v1/account
                   await supabase.auth.signOut();
                   router.replace('/(auth)/login');
                 },
@@ -78,9 +78,9 @@ export default function SettingsScreen() {
 
   return (
     <Screen>
-      <ScrollView style={styles.container}>
+      <ScrollView style={[styles.container, { backgroundColor: theme.bg }]}>
         {/* Personnalité */}
-        <SettingSectionHeader title="Personnalité d'Elio" />
+        <SettingSectionHeader title="Personnalité de Diva" />
         <SettingSelect
           label="Ton"
           options={TONE_OPTIONS}
@@ -95,13 +95,13 @@ export default function SettingsScreen() {
         />
         <SettingToggle
           label="Tutoiement"
-          description="Elio te tutoie"
+          description="Diva te tutoie"
           value={settings.personality.formality === 'tu'}
           onToggle={(v) => updatePersonality('formality', v ? 'tu' : 'vous')}
         />
         <SettingToggle
           label="Humour"
-          description="Elio peut faire de l'humour"
+          description="Diva peut faire de l'humour"
           value={settings.personality.humor}
           onToggle={(v) => updatePersonality('humor', v)}
         />
@@ -131,15 +131,12 @@ export default function SettingsScreen() {
         {/* À propos */}
         <SettingSectionHeader title="À propos" />
         <SettingRow label="Version" value="1.0.0 (MVP)" />
-        <SettingRow label="Mentions légales" onPress={() => Linking.openURL('https://elio.ai/legal')} />
-        <SettingRow label="Politique de confidentialité" onPress={() => Linking.openURL('https://elio.ai/privacy')} />
-        <SettingRow label="Contact support" onPress={() => Linking.openURL('mailto:support@elio.ai')} />
+        <SettingRow label="Contact support" onPress={() => Linking.openURL('mailto:contact@diva-ai.app')} />
 
         {/* Déconnexion */}
         <Button
           title="Se déconnecter"
           onPress={handleLogout}
-          variant="outline"
           style={styles.logoutBtn}
         />
       </ScrollView>
@@ -148,6 +145,6 @@ export default function SettingsScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
+  container: { flex: 1 },
   logoutBtn: { margin: 24, marginBottom: 48 },
 });

@@ -499,6 +499,18 @@ export class Orchestrator {
       // Retrieve relevant memories
       const memories = await this.retrieveMemories(request.userId, text);
 
+      // Load user settings for personality
+      let userSettings: any;
+      try {
+        const supabase = getSupabase();
+        const { data } = await supabase
+          .from('users')
+          .select('settings')
+          .eq('id', request.userId)
+          .single();
+        if (data?.settings) userSettings = data.settings as Record<string, unknown>;
+      } catch { /* use defaults */ }
+
       // Add user message to session history
       sessionHistory.push({ role: 'user', content: text });
 
@@ -509,6 +521,7 @@ export class Orchestrator {
         history: sessionHistory.slice(0, -1),
         memories,
         tools: ELIO_TOOLS,
+        userSettings,
       });
 
       if (request.cancelled) return;
@@ -536,6 +549,7 @@ export class Orchestrator {
             { role: 'assistant' as const, content: llmResult.text || '[utilisation outil]' },
           ],
           memories,
+          userSettings,
         });
         if (request.cancelled) return;
       }

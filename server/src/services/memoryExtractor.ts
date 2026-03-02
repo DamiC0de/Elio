@@ -42,15 +42,24 @@ export class MemoryExtractor {
   }
 
   async extract(userId: string, messages: Message[], conversationId: string): Promise<ExtractedFact[]> {
+    this.logger.info({
+      msg: '[MEMORY-DEBUG] extract() called',
+      userId,
+      messageCount: messages.length,
+      conversationId,
+    });
+
     if (messages.length < 2) {
-      this.logger.debug('Conversation too short for extraction, skipping');
+      this.logger.warn({ msg: '[MEMORY-DEBUG] Conversation too short, skipping', messageCount: messages.length });
       return [];
     }
 
     try {
       const conversationText = messages
-        .map(m => `${m.role === 'user' ? 'User' : 'Elio'}: ${m.content}`)
+        .map(m => `${m.role === 'user' ? 'User' : 'Diva'}: ${m.content}`)
         .join('\n');
+
+      this.logger.info({ msg: '[MEMORY-DEBUG] Calling LLM for extraction', conversationPreview: conversationText.slice(0, 300) });
 
       const result = await this.llm.chat({
         userId,
@@ -58,36 +67,50 @@ export class MemoryExtractor {
         history: [],
       });
 
+      this.logger.info({ msg: '[MEMORY-DEBUG] LLM response received', responsePreview: result.text.slice(0, 500) });
+
       const jsonMatch = result.text.match(/\[[\s\S]*\]/);
       if (!jsonMatch) {
-        this.logger.debug('No facts extracted');
+        this.logger.warn({ msg: '[MEMORY-DEBUG] No JSON array found in LLM response', fullResponse: result.text });
         return [];
       }
 
       const facts = JSON.parse(jsonMatch[0]) as ExtractedFact[];
 
       this.logger.info({
-        msg: 'Facts extracted',
+        msg: '[MEMORY-DEBUG] Facts parsed',
         conversationId,
         count: facts.length,
+        facts: facts.map(f => ({ category: f.category, content: f.content, score: f.relevanceScore })),
       });
+
+      if (facts.length === 0) {
+        this.logger.warn({ msg: '[MEMORY-DEBUG] LLM returned empty array — nothing to store' });
+        return [];
+      }
 
       // Store each fact in Supabase
       const db = getSupabase();
       for (const fact of facts) {
+        this.logger.info({ msg: '[MEMORY-DEBUG] Generating embedding', content: fact.content });
         const embedding = await this.generateEmbedding(fact.content);
+        this.logger.info({ msg: '[MEMORY-DEBUG] Embedding generated', dims: embedding.length, isZero: embedding.every(v => v === 0) });
 
         // Check for duplicates (cosine similarity > 0.9)
-        const { data: duplicates } = await db.rpc('match_memories', {
+        const { data: duplicates, error: rpcError } = await db.rpc('match_memories', {
           query_embedding: embedding,
           match_threshold: 0.9,
           match_count: 1,
           p_user_id: userId,
         });
 
+        if (rpcError) {
+          this.logger.error({ msg: '[MEMORY-DEBUG] match_memories RPC failed', error: rpcError });
+        }
+
         if (duplicates?.length) {
           // Update existing memory instead of inserting
-          await db
+          const { error: updateErr } = await db
             .from('memories')
             .update({
               content: fact.content,
@@ -97,10 +120,14 @@ export class MemoryExtractor {
             })
             .eq('id', duplicates[0].id);
 
-          this.logger.debug({ msg: 'Memory updated (duplicate)', content: fact.content });
+          if (updateErr) {
+            this.logger.error({ msg: '[MEMORY-DEBUG] Update failed', error: updateErr, content: fact.content });
+          } else {
+            this.logger.info({ msg: '[MEMORY-DEBUG] Memory UPDATED (duplicate)', content: fact.content, existingId: duplicates[0].id });
+          }
         } else {
           // Insert new memory
-          await db.from('memories').insert({
+          const { error: insertErr } = await db.from('memories').insert({
             user_id: userId,
             category: fact.category,
             content: fact.content,
@@ -109,13 +136,17 @@ export class MemoryExtractor {
             relevance_score: fact.relevanceScore,
           });
 
-          this.logger.debug({ msg: 'Memory inserted', content: fact.content });
+          if (insertErr) {
+            this.logger.error({ msg: '[MEMORY-DEBUG] Insert FAILED', error: insertErr, content: fact.content, userId });
+          } else {
+            this.logger.info({ msg: '[MEMORY-DEBUG] Memory INSERTED', content: fact.content, category: fact.category });
+          }
         }
       }
 
       return facts;
     } catch (error) {
-      this.logger.error({ msg: 'Memory extraction failed', error });
+      this.logger.error({ msg: '[MEMORY-DEBUG] extract() CRASHED', error: String(error), stack: (error as Error)?.stack });
       return [];
     }
   }

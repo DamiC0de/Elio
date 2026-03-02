@@ -1,0 +1,28 @@
+apply plugin: 'com.android.library'
+
+group = 'expo.modules.notificationreader'
+version = '0.1.0'
+
+android {
+  namespace "expo.modules.notificationreader"
+  compileSdkVersion safeExtGet("compileSdkVersion", 34)
+
+  defaultConfig {
+    minSdkVersion safeExtGet("minSdkVersion", 24)
+    targetSdkVersion safeExtGet("targetSdkVersion", 34)
+  }
+
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_11
+    targetCompatibility JavaVersion.VERSION_11
+  }
+}
+
+dependencies {
+  implementation project(':expo-modules-core')
+  implementation "com.facebook.react:react-android"
+}
+
+int safeExtGet(String prop, int fallback) {
+  rootProject.ext.has(prop) ? rootProject.ext.get(prop) as int : fallback
+}

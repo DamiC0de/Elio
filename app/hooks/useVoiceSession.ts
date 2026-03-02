@@ -4,9 +4,10 @@
  * Tap during response → stop/cancel.
  */
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { Linking } from 'react-native';
+import { Linking, Platform } from 'react-native';
 import { Audio } from 'expo-av';
 import type { OrbState } from '../components/Orb/OrbView';
+import { getNotifications } from '../modules/notification-reader/src';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://72.60.155.227:4000';
 const WS_URL = API_URL.replace('http', 'ws');
@@ -29,6 +30,43 @@ interface VoiceSessionReturn {
 const SILENCE_THRESHOLD = -40; // dB — below this = silence
 const SILENCE_DURATION_MS = 1500; // 1.5s of silence → auto-send
 const MIN_RECORDING_MS = 800; // don't auto-stop before 800ms
+
+/**
+ * EL-032 — Handle server request for captured notifications.
+ * Reads from the native NotificationListenerService and sends back via WS.
+ */
+async function handleNotificationRequest(
+  ws: WebSocket,
+  filter?: { packageNames?: string[]; limit?: number; category?: string },
+) {
+  try {
+    if (Platform.OS !== 'android') {
+      ws.send(JSON.stringify({
+        type: 'notifications_response',
+        notifications: [],
+        error: 'Notification reading is only available on Android',
+      }));
+      return;
+    }
+
+    const notifications = await getNotifications({
+      packageNames: filter?.packageNames,
+      limit: filter?.limit ?? 50,
+      category: (filter?.category as 'message' | 'email' | 'social' | 'all') ?? 'all',
+    });
+
+    ws.send(JSON.stringify({
+      type: 'notifications_response',
+      notifications,
+    }));
+  } catch (error) {
+    ws.send(JSON.stringify({
+      type: 'notifications_response',
+      notifications: [],
+      error: String(error),
+    }));
+  }
+}
 
 export function useVoiceSession({ token }: VoiceSessionOptions): VoiceSessionReturn {
   const [orbState, setOrbState] = useState<OrbState>('idle');
@@ -108,6 +146,11 @@ export function useVoiceSession({ token }: VoiceSessionOptions): VoiceSessionRet
             if (msg.url) {
               try { await Linking.openURL(msg.url); } catch {}
             }
+            break;
+
+          case 'request_notifications':
+            // Server is asking for captured notifications (EL-032)
+            handleNotificationRequest(ws, msg.filter);
             break;
 
           case 'error':

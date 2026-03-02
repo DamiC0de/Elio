@@ -243,6 +243,27 @@ Si tu ne connais pas le scheme exact, utilise une URL https:// qui ouvrira Safar
       properties: {},
     },
   },
+  {
+    name: 'read_notifications',
+    description: "Lire les notifications/messages reçus sur le téléphone (WhatsApp, SMS, Gmail, Telegram, etc.). Utilise quand l'utilisateur dit 'lis-moi mes messages', 'j'ai reçu des messages ?', 'qu'est-ce que X m'a envoyé ?', 'mes mails non lus ?'",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        app: {
+          type: 'string',
+          description: "Filtrer par app (whatsapp, telegram, gmail, sms, messenger, discord, instagram, outlook). Laisse vide pour tout.",
+        },
+        contact: {
+          type: 'string',
+          description: "Filtrer par nom de contact/expéditeur si l'utilisateur demande un contact spécifique.",
+        },
+        limit: {
+          type: 'number',
+          description: "Nombre max de messages à retourner (défaut 10)",
+        },
+      },
+    },
+  },
 ];
 
 // open_app: Claude builds the URL scheme directly, no mapping needed
@@ -409,11 +430,21 @@ export class Orchestrator {
 
       // Extract memories from conversation (async, fire-and-forget)
       const history = this.sessionHistory.get(socket);
+      this.logger.info({
+        msg: '[MEMORY-DEBUG] WS close — checking history',
+        userId,
+        hasHistory: !!history,
+        historyLength: history?.length ?? 0,
+        historyPreview: history?.map(m => `${m.role}: ${m.content.slice(0, 80)}`),
+      });
       if (history && history.length >= 2) {
         const conversationId = `ws-${Date.now()}`;
+        this.logger.info({ msg: '[MEMORY-DEBUG] Triggering extractMemories', userId, conversationId });
         this.extractMemories(userId, history, conversationId)
-          .then(() => this.logger.info({ msg: 'Memories extracted', userId, conversationId }))
-          .catch(err => this.logger.error({ msg: 'Memory extraction failed', error: String(err) }));
+          .then(() => this.logger.info({ msg: '[MEMORY-DEBUG] extractMemories SUCCESS', userId, conversationId }))
+          .catch(err => this.logger.error({ msg: '[MEMORY-DEBUG] extractMemories FAILED', error: String(err), userId, conversationId }));
+      } else {
+        this.logger.warn({ msg: '[MEMORY-DEBUG] Skipped extraction — history too short or missing', userId });
       }
 
       this.sessionHistory.delete(socket);
@@ -802,6 +833,15 @@ export class Orchestrator {
             results.push({ name: tool.name, result: listResult });
             break;
           }
+          case 'read_notifications': {
+            // Request notifications from the client app via WebSocket
+            const notifResult = await this.requestNotificationsFromClient(
+              socket,
+              tool.input as { app?: string; contact?: string; limit?: number },
+            );
+            results.push({ name: tool.name, result: notifResult });
+            break;
+          }
           default:
             results.push({ name: tool.name, result: `Outil ${tool.name} non disponible` });
         }
@@ -1007,6 +1047,95 @@ export class Orchestrator {
       this.logger.error({ msg: 'Failed to retrieve memories', error });
       return [];
     }
+  }
+
+  /**
+   * Request notifications from client app via WebSocket.
+   * Sends a 'request_notifications' event and waits for the response.
+   */
+  private async requestNotificationsFromClient(
+    socket: import('ws').WebSocket,
+    filter: { app?: string; contact?: string; limit?: number },
+  ): Promise<string> {
+    const APP_PACKAGES: Record<string, string[]> = {
+      whatsapp: ['com.whatsapp', 'com.whatsapp.w4b'],
+      telegram: ['org.telegram.messenger'],
+      gmail: ['com.google.android.gm'],
+      sms: ['com.google.android.apps.messaging', 'com.samsung.android.messaging'],
+      messenger: ['com.facebook.orca'],
+      discord: ['com.discord'],
+      instagram: ['com.instagram.android'],
+      outlook: ['com.microsoft.office.outlook'],
+      slack: ['com.Slack'],
+    };
+
+    // Build the filter for the client
+    const clientFilter: Record<string, unknown> = {
+      limit: filter.limit ?? 10,
+      category: 'all',
+    };
+
+    if (filter.app) {
+      const packages = APP_PACKAGES[filter.app.toLowerCase()];
+      if (packages) clientFilter.packageNames = packages;
+    }
+
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        resolve('Le téléphone n\'a pas répondu. Vérifie que la permission "Accès aux notifications" est activée dans les paramètres Android.');
+      }, 5000);
+
+      // Send request to client
+      this.sendEvent(socket, {
+        type: 'request_notifications',
+        filter: clientFilter,
+      } as any);
+
+      // Listen for one-time response
+      const handler = (raw: Buffer) => {
+        try {
+          const msg = JSON.parse(raw.toString());
+          if (msg.type === 'notifications_response') {
+            clearTimeout(timeout);
+            socket.removeListener('message', handler);
+
+            const notifications = msg.notifications || [];
+            if (notifications.length === 0) {
+              resolve('Aucun nouveau message.');
+              return;
+            }
+
+            // Format notifications for Claude
+            let formatted = '';
+            for (const n of notifications) {
+              // Filter by contact name if specified
+              if (filter.contact) {
+                const contactLower = filter.contact.toLowerCase();
+                const titleLower = (n.title || '').toLowerCase();
+                if (!titleLower.includes(contactLower)) continue;
+              }
+
+              const time = new Date(n.timestamp).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+              const content = n.bigText || n.text || '';
+              const app = n.appName || n.packageName;
+              const group = n.isGroup && n.conversationTitle ? ` (${n.conversationTitle})` : '';
+
+              formatted += `[${time}] ${app}${group} — ${n.title}: ${content}\n`;
+            }
+
+            if (!formatted) {
+              resolve(filter.contact
+                ? `Aucun message de ${filter.contact}.`
+                : 'Aucun nouveau message correspondant.');
+            } else {
+              resolve(formatted.trim());
+            }
+          }
+        } catch { /* ignore non-JSON */ }
+      };
+
+      socket.on('message', handler);
+    });
   }
 
   /** Extract and store memories after conversation ends */

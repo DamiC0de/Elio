@@ -327,7 +327,7 @@ export class Orchestrator {
 
       // Extract memories from conversation (async, fire-and-forget)
       const history = this.sessionHistory.get(socket);
-      if (history && history.length >= 3) {
+      if (history && history.length >= 2) {
         const conversationId = `ws-${Date.now()}`;
         this.extractMemories(userId, history, conversationId)
           .then(() => this.logger.info({ msg: 'Memories extracted', userId, conversationId }))

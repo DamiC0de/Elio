@@ -42,7 +42,7 @@ export class MemoryExtractor {
   }
 
   async extract(userId: string, messages: Message[], conversationId: string): Promise<ExtractedFact[]> {
-    if (messages.length < 3) {
+    if (messages.length < 2) {
       this.logger.debug('Conversation too short for extraction, skipping');
       return [];
     }

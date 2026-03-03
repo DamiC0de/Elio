@@ -14,7 +14,16 @@
     },
     "ios": {
       "supportsTablet": true,
-      "userInterfaceStyle": "automatic"
+      "userInterfaceStyle": "automatic",
+      "bundleIdentifier": "com.diva.app",
+      "buildNumber": "1",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Diva a besoin du micro pour la reconnaissance vocale",
+        "NSSpeechRecognitionUsageDescription": "Diva utilise la reconnaissance vocale pour comprendre tes commandes"
+      },
+      "entitlements": {
+        "com.apple.security.application-groups": ["group.com.diva.app"]
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -24,7 +33,8 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "userInterfaceStyle": "automatic"
+      "userInterfaceStyle": "automatic",
+      "package": "com.diva.app"
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -34,6 +44,11 @@
       "expo-font",
       "expo-secure-store",
       "./modules/notification-reader/app.plugin"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "diva-keyboard"
+      }
+    }
   }
 }

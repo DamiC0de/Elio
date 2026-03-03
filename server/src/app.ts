@@ -16,7 +16,6 @@ import { wsRoutes } from './routes/ws.js';
 import { keyboardRoutes } from './routes/keyboard.js';
 import { gmailRoutes } from './routes/gmail.js';
 import { telegramRoutes } from './routes/telegram.js';
-import { telegramUserRoutes } from './routes/telegramUser.js';
 
 
 export async function buildApp() {
@@ -54,7 +53,6 @@ export async function buildApp() {
   await app.register(keyboardRoutes);
   await app.register(gmailRoutes);
   await app.register(telegramRoutes);
-  await app.register(telegramUserRoutes);
 
   return app;
 }

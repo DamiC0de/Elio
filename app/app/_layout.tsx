@@ -2,8 +2,12 @@ import React, { useEffect, useState } from 'react';
 import { Slot, router } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import * as WebBrowser from 'expo-web-browser';
 import { supabase } from '../lib/supabase';
 import type { Session } from '@supabase/supabase-js';
+
+// Required for OAuth redirects to work in Expo Go
+WebBrowser.maybeCompleteAuthSession();
 
 export default function RootLayout() {
   const [session, setSession] = useState<Session | null>(null);

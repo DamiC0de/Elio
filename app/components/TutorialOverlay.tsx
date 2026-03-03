@@ -18,13 +18,13 @@ interface TutorialStep {
 
 const STEPS: Omit<TutorialStep, 'highlightArea'>[] = [
   {
-    title: '🎙️ Parler à Elio',
-    description: 'Maintiens ce bouton pour parler à Elio. Relâche quand tu as fini.',
+    title: '🎙️ Parler à Diva',
+    description: 'Maintiens ce bouton pour parler à Diva. Relâche quand tu as fini.',
     position: 'top',
   },
   {
     title: '💬 Tes conversations',
-    description: 'Les réponses d\'Elio et tes messages apparaissent ici.',
+    description: 'Les réponses de Diva et tes messages apparaissent ici.',
     position: 'bottom',
   },
   {
@@ -34,7 +34,7 @@ const STEPS: Omit<TutorialStep, 'highlightArea'>[] = [
   },
   {
     title: '🚀 Essaie !',
-    description: 'Demande la météo, lis tes mails, ou crée un rappel. Elio est prêt !',
+    description: 'Demande la météo, lis tes mails, ou crée un rappel. Diva est prête !',
     position: 'bottom',
   },
 ];

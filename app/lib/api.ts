@@ -1,7 +1,7 @@
 import { supabase } from './supabase';
 
 // VPS IP for dev, will be replaced by domain later
-const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://72.60.155.227:4000';
+export const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://72.60.155.227:3001';
 
 async function getAuthToken(): Promise<string | null> {
   const { data } = await supabase.auth.getSession();

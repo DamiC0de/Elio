@@ -14,6 +14,10 @@ import { settingsRoutes } from './routes/settings.js';
 import { userRoutes } from './routes/user.js';
 import { wsRoutes } from './routes/ws.js';
 import { keyboardRoutes } from './routes/keyboard.js';
+import { gmailRoutes } from './routes/gmail.js';
+import { telegramRoutes } from './routes/telegram.js';
+import { telegramUserRoutes } from './routes/telegramUser.js';
+
 
 export async function buildApp() {
   const app = Fastify({
@@ -48,6 +52,9 @@ export async function buildApp() {
   await app.register(userRoutes);
   await app.register(wsRoutes);
   await app.register(keyboardRoutes);
+  await app.register(gmailRoutes);
+  await app.register(telegramRoutes);
+  await app.register(telegramUserRoutes);
 
   return app;
 }

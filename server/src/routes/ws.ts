@@ -48,7 +48,7 @@ export async function wsRoutes(app: FastifyInstance): Promise<void> {
     // Send welcome
     socket.send(JSON.stringify({
       type: 'connected',
-      message: 'Bienvenue sur Elio',
+      message: 'Bienvenue sur Diva',
       version: '0.1.0',
       userId,
     }));

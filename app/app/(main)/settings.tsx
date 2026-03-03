@@ -1,7 +1,7 @@
 /**
  * EL-014 — Settings Screen (dark mode, Diva)
  */
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { ScrollView, Alert, Linking, StyleSheet } from 'react-native';
 import { Screen } from '../../components/ui/Screen';
 import { Button } from '../../components/ui/Button';
@@ -9,8 +9,9 @@ import { SettingRow, SettingToggle, SettingSelect, SettingSectionHeader } from '
 import { useSettings } from '../../hooks/useSettings';
 import { useTheme } from '../../constants/theme';
 import { supabase } from '../../lib/supabase';
-import { api } from '../../lib/api';
+import { api, API_BASE_URL } from '../../lib/api';
 import { router } from 'expo-router';
+import * as WebBrowser from 'expo-web-browser';
 
 const TONE_OPTIONS = [
   { label: '😊 Amical', value: 'friendly' },
@@ -33,6 +34,184 @@ const WAKE_WORD_OPTIONS = [
 export default function SettingsScreen() {
   const theme = useTheme();
   const { settings, loading, updatePersonality, updateSetting } = useSettings();
+  const [gmailEmail, setGmailEmail] = useState<string | null>(null);
+  const [gmailLoading, setGmailLoading] = useState(false);
+  const [telegramUsername, setTelegramUsername] = useState<string | null>(null);
+
+  // Check connection statuses on mount
+  useEffect(() => {
+    checkGmailStatus();
+    checkTelegramStatus();
+  }, []);
+
+  const checkGmailStatus = async () => {
+    try {
+      const res = await api.get('/api/v1/gmail/status');
+      setGmailEmail(res.data?.email || null);
+    } catch {
+      setGmailEmail(null);
+    }
+  };
+
+  const handleGmailConnect = async () => {
+    setGmailLoading(true);
+    try {
+      // Get current user ID
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        Alert.alert('Erreur', 'Tu dois être connecté');
+        return;
+      }
+
+      // Open browser for OAuth flow
+      const authUrl = `${API_BASE_URL}/api/v1/gmail/auth?userId=${user.id}`;
+      const result = await WebBrowser.openBrowserAsync(authUrl);
+      
+      // After browser closes, check status
+      if (result.type === 'cancel' || result.type === 'dismiss') {
+        await checkGmailStatus();
+        if (gmailEmail) {
+          Alert.alert('Gmail connecté', `Connecté en tant que ${gmailEmail}`);
+        }
+      }
+    } catch (err) {
+      Alert.alert('Erreur', String(err));
+    } finally {
+      setGmailLoading(false);
+    }
+  };
+
+  const handleGmailDisconnect = () => {
+    Alert.alert('Déconnecter Gmail', 'Diva ne pourra plus lire ni envoyer tes emails.', [
+      { text: 'Annuler', style: 'cancel' },
+      {
+        text: 'Déconnecter',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await api.delete('/api/v1/gmail/disconnect');
+            setGmailEmail(null);
+          } catch (err) {
+            Alert.alert('Erreur', String(err));
+          }
+        },
+      },
+    ]);
+  };
+
+  const checkTelegramStatus = async () => {
+    try {
+      const res = await api.get('/api/v1/telegram/user/status');
+      setTelegramUsername(res.data?.connected ? 'Connecté' : null);
+    } catch {
+      setTelegramUsername(null);
+    }
+  };
+
+  const handleTelegramConnect = async () => {
+    // Prompt for phone number
+    Alert.prompt(
+      'Connecter Telegram',
+      'Entre ton numéro de téléphone (format international, ex: +33612345678)',
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Envoyer le code',
+          onPress: async (phoneNumber) => {
+            if (!phoneNumber) return;
+            
+            try {
+              const res = await api.post('/api/v1/telegram/user/auth/start', { phoneNumber });
+              if (res.data?.success) {
+                // Prompt for code
+                setTimeout(() => {
+                  Alert.prompt(
+                    'Code de vérification',
+                    'Entre le code reçu sur Telegram',
+                    [
+                      { text: 'Annuler', style: 'cancel' },
+                      {
+                        text: 'Vérifier',
+                        onPress: async (code) => {
+                          if (!code) return;
+                          
+                          try {
+                            const verifyRes = await api.post('/api/v1/telegram/user/auth/complete', {
+                              phoneNumber,
+                              code,
+                            });
+                            
+                            if (verifyRes.data?.error === '2FA_REQUIRED') {
+                              // Handle 2FA
+                              Alert.prompt(
+                                'Authentification 2FA',
+                                'Entre ton mot de passe Telegram',
+                                [
+                                  { text: 'Annuler', style: 'cancel' },
+                                  {
+                                    text: 'Confirmer',
+                                    onPress: async (password) => {
+                                      const twoFaRes = await api.post('/api/v1/telegram/user/auth/complete', {
+                                        phoneNumber,
+                                        code,
+                                        password,
+                                      });
+                                      if (twoFaRes.data?.success) {
+                                        Alert.alert('Succès', 'Telegram connecté !');
+                                        checkTelegramStatus();
+                                      } else {
+                                        Alert.alert('Erreur', twoFaRes.data?.error || 'Échec de connexion');
+                                      }
+                                    },
+                                  },
+                                ],
+                                'secure-text'
+                              );
+                            } else if (verifyRes.data?.success) {
+                              Alert.alert('Succès', 'Telegram connecté !');
+                              checkTelegramStatus();
+                            } else {
+                              Alert.alert('Erreur', verifyRes.data?.error || 'Échec de vérification');
+                            }
+                          } catch (err) {
+                            Alert.alert('Erreur', String(err));
+                          }
+                        },
+                      },
+                    ],
+                    'plain-text'
+                  );
+                }, 500);
+              } else {
+                Alert.alert('Erreur', res.data?.error || 'Échec de l\'envoi du code');
+              }
+            } catch (err) {
+              Alert.alert('Erreur', String(err));
+            }
+          },
+        },
+      ],
+      'plain-text'
+    );
+  };
+
+  const handleTelegramDisconnect = () => {
+    Alert.alert('Déconnecter Telegram', 'Diva ne pourra plus lire tes messages Telegram.', [
+      { text: 'Annuler', style: 'cancel' },
+      {
+        text: 'Déconnecter',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await api.delete('/api/v1/telegram/user/disconnect');
+            setTelegramUsername(null);
+          } catch (err) {
+            Alert.alert('Erreur', String(err));
+          }
+        },
+      },
+    ]);
+  };
 
   const handleLogout = () => {
     Alert.alert('Se déconnecter', 'Es-tu sûr(e) ?', [
@@ -158,6 +337,19 @@ export default function SettingsScreen() {
         }} />
         <SettingRow label="Exporter mes données" onPress={() => Alert.alert('Export', 'Fonctionnalité à venir')} />
         <SettingRow label="Supprimer mon compte" onPress={handleDeleteAccount} />
+
+        {/* Services connectés */}
+        <SettingSectionHeader title="Services connectés" />
+        <SettingRow
+          label="Gmail"
+          value={gmailEmail ? `✅ ${gmailEmail}` : '❌ Non connecté'}
+          onPress={gmailEmail ? handleGmailDisconnect : handleGmailConnect}
+        />
+        <SettingRow
+          label="Telegram"
+          value={telegramUsername ? `✅ @${telegramUsername}` : '❌ Non connecté'}
+          onPress={telegramUsername ? handleTelegramDisconnect : handleTelegramConnect}
+        />
 
         {/* À propos */}
         <SettingSectionHeader title="À propos" />

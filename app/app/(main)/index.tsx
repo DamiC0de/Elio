@@ -1,5 +1,5 @@
 /**
- * Elio — Voice-First Main Screen (The Orb)
+ * Diva — Voice-First Main Screen (The Orb)
  * Single tap to start. Silence auto-detects. Tap to stop.
  */
 import React, { useState, useEffect } from 'react';
@@ -46,7 +46,7 @@ export default function OrbScreen() {
     <View style={[styles.container, { backgroundColor: theme.bg, paddingTop: insets.top }]}>
       {/* Header */}
       <View style={styles.header}>
-        <Text style={[styles.title, { color: theme.text }]}>elio</Text>
+        <Text style={[styles.title, { color: theme.text }]}>diva</Text>
         <Pressable onPress={() => router.push('/settings')} hitSlop={20}>
           <View style={[styles.settingsBtn, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
             <Text style={[styles.settingsIcon, { color: theme.textSecondary }]}>⚙</Text>

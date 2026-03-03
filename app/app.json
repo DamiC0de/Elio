@@ -3,7 +3,7 @@
     "name": "Diva",
     "slug": "diva",
     "version": "0.1.0",
-    "scheme": "elio",
+    "scheme": "diva",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",

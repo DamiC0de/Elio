@@ -48,7 +48,7 @@ export default function OnboardingScreen() {
           <Text variant="hero" color={theme.primary} style={s.centerText}>
             🌅
           </Text>
-          <Text variant="hero" style={s.centerText}>Elio</Text>
+          <Text variant="hero" style={s.centerText}>Diva</Text>
           <Text variant="body" color={theme.textSecondary} style={s.centerText}>
             Ton assistant vocal intelligent.{'\n'}
             Il gère tes emails, ton agenda, et bien plus — par la voix.
@@ -62,7 +62,7 @@ export default function OnboardingScreen() {
       content: (
         <View style={s.stepContent}>
           <Text variant="heading" style={s.centerText}>
-            Pour fonctionner, Elio a besoin de :
+            Pour fonctionner, Diva a besoin de :
           </Text>
           <View style={s.permissionList}>
             <PermissionItem
@@ -100,7 +100,7 @@ export default function OnboardingScreen() {
             autoCapitalize="words"
           />
           <View style={s.toggleRow}>
-            <Text variant="body">Elio te tutoie ?</Text>
+            <Text variant="body">Diva te tutoie ?</Text>
             <Switch
               value={useTu}
               onValueChange={setUseTu}

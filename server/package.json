@@ -1,7 +1,7 @@
 {
   "name": "@diva/server",
   "version": "0.1.0",
-  "description": "Elio API Gateway \u2014 Backend Fastify",
+  "description": "Elio API Gateway — Backend Fastify",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
@@ -28,7 +28,8 @@
     "dotenv": "^17.3.1",
     "fastify": "^5.7.4",
     "fastify-plugin": "^5.1.0",
-    "ioredis": "^5.10.0"
+    "ioredis": "^5.10.0",
+    "telegram": "^2.26.22"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

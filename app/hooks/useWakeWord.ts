@@ -3,7 +3,7 @@
  *
  * NOTE: Actual Porcupine integration requires:
  * 1. @picovoice/porcupine-react-native (native module)
- * 2. Custom wake word model "Hey Elio" trained via Picovoice Console
+ * 2. Custom wake word model "Diva" trained via Picovoice Console
  * 3. expo-dev-client (not Expo Go)
  *
  * This hook provides the interface; native implementation comes with prebuild.
@@ -25,10 +25,10 @@ export function useWakeWord({ mode, onWakeWordDetected }: UseWakeWordOptions) {
   const start = useCallback(async () => {
     if (mode === 'manual') return;
 
-    // TODO: Initialize Porcupine with custom "Hey Elio" model
+    // TODO: Initialize Porcupine with custom "Diva" model
     // const porcupine = await PorcupineManager.fromKeywordPaths(
     //   ACCESS_KEY,
-    //   ['/path/to/hey-elio.ppn'],
+    //   ['/path/to/diva.ppn'],
     //   (keywordIndex) => onWakeWordDetected(),
     // );
     // await porcupine.start();

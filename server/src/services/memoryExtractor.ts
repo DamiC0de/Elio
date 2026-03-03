@@ -1,9 +1,16 @@
 /**
  * EL-025 — Memory Extraction Service — wired to Supabase + embedding API
  */
+// randomUUID removed - not used
 import type { FastifyBaseLogger } from 'fastify';
 import { LLMService } from './llm.js';
 import { getSupabase } from '../lib/supabase.js';
+
+/** Return conversationId as-is if it's a valid UUID, otherwise generate one */
+function toUuidOrNull(id: string): string | null {
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  return uuidRegex.test(id) ? id : null;
+}
 
 interface ExtractedFact {
   category: 'preference' | 'fact' | 'person' | 'event' | 'reminder';
@@ -110,14 +117,17 @@ export class MemoryExtractor {
 
         if (duplicates?.length) {
           // Update existing memory instead of inserting
-          const { error: updateErr } = await db
-            .from('memories')
-            .update({
+          const updateData: Record<string, unknown> = {
               content: fact.content,
               embedding: JSON.stringify(embedding),
               relevance_score: fact.relevanceScore,
-              source_conversation_id: conversationId,
-            })
+          };
+          const convUuid = toUuidOrNull(conversationId);
+          if (convUuid) updateData.source_conversation_id = convUuid;
+
+          const { error: updateErr } = await db
+            .from('memories')
+            .update(updateData)
             .eq('id', duplicates[0].id);
 
           if (updateErr) {
@@ -127,14 +137,17 @@ export class MemoryExtractor {
           }
         } else {
           // Insert new memory
-          const { error: insertErr } = await db.from('memories').insert({
+          const insertData: Record<string, unknown> = {
             user_id: userId,
             category: fact.category,
             content: fact.content,
             embedding: JSON.stringify(embedding),
-            source_conversation_id: conversationId,
             relevance_score: fact.relevanceScore,
-          });
+          };
+          const insertConvUuid = toUuidOrNull(conversationId);
+          if (insertConvUuid) insertData.source_conversation_id = insertConvUuid;
+
+          const { error: insertErr } = await db.from('memories').insert(insertData);
 
           if (insertErr) {
             this.logger.error({ msg: '[MEMORY-DEBUG] Insert FAILED', error: insertErr, content: fact.content, userId });

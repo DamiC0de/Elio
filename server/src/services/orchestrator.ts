@@ -14,6 +14,8 @@ import { LLMService } from './llm.js';
 import { getSupabase } from '../lib/supabase.js';
 import { MemoryRetriever } from './memoryRetriever.js';
 import { MemoryExtractor } from './memoryExtractor.js';
+import { sendNotificationToTelegram } from '../routes/telegram.js';
+import * as TelegramUser from './telegramUser.js';
 
 // Request states
 export enum RequestState {
@@ -61,7 +63,11 @@ interface AudioMessage {
   format: string;
 }
 
-type ClientMessage = AudioChunkMessage | AudioEndMessage | TextMessage | CancelMessage | StartListeningMessage | StopListeningMessage | AudioMessage;
+interface PingMessage {
+  type: 'ping';
+}
+
+type ClientMessage = AudioChunkMessage | AudioEndMessage | TextMessage | CancelMessage | StartListeningMessage | StopListeningMessage | AudioMessage | PingMessage;
 
 // WebSocket message types (server → client)
 interface StateChangeEvent {
@@ -264,22 +270,250 @@ Si tu ne connais pas le scheme exact, utilise une URL https:// qui ouvrira Safar
       },
     },
   },
+  {
+    name: 'read_telegram',
+    description: "Lire les messages privés Telegram de l'utilisateur. Utilise quand il demande 'mes messages Telegram', 'qu'est-ce que j'ai sur Telegram ?'. Retourne les messages récents de tous les chats.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        limit: {
+          type: 'number',
+          description: "Nombre max de messages à retourner (défaut 10)",
+        },
+      },
+    },
+  },
+  {
+    name: 'read_calendar',
+    description: "Lire le calendrier de l'utilisateur (événements, rendez-vous). Utilise quand il demande 'qu'est-ce que j'ai de prévu ?', 'mon planning', 'mes rendez-vous', 'qu'est-ce que j'ai demain ?', 'mon calendrier'",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        days_ahead: {
+          type: 'number',
+          description: "Nombre de jours à regarder en avance (défaut 14)",
+        },
+      },
+    },
+  },
+  {
+    name: 'add_calendar',
+    description: "Ajouter un événement au calendrier. Utilise quand l'utilisateur veut créer un RDV, ajouter un événement, mettre quelque chose dans son agenda. IMPORTANT: (1) demande confirmation à l'utilisateur AVANT d'appeler ce tool, (2) pour les événements sportifs/concerts/spectacles, recherche et utilise l'heure RÉELLE de l'événement (pas une heure inventée), (3) si tu ne connais pas l'heure exacte, demande à l'utilisateur.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        title: {
+          type: 'string',
+          description: "Titre de l'événement (obligatoire)",
+        },
+        start_date: {
+          type: 'string',
+          description: "Date et heure de début au format ISO 8601 (ex: 2026-03-22T21:05:00)",
+        },
+        end_date: {
+          type: 'string',
+          description: "Date et heure de fin au format ISO 8601 (optionnel, défaut: 2h après le début)",
+        },
+        location: {
+          type: 'string',
+          description: "Lieu de l'événement (optionnel)",
+        },
+        notes: {
+          type: 'string',
+          description: "Notes ou description (optionnel)",
+        },
+        all_day: {
+          type: 'boolean',
+          description: "Événement toute la journée (défaut: false)",
+        },
+      },
+      required: ['title', 'start_date'],
+    },
+  },
+  {
+    name: 'read_emails',
+    description: "Lire les emails récents de l'utilisateur (Gmail). Utilise quand il demande 'mes mails', 'j'ai reçu des mails ?', 'qu'est-ce que j'ai comme emails ?', 'mes messages Gmail'",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        count: {
+          type: 'number',
+          description: "Nombre d'emails à récupérer (défaut 5, max 20)",
+        },
+        query: {
+          type: 'string',
+          description: "Recherche (ex: 'from:boss', 'is:unread', 'subject:facture')",
+        },
+      },
+    },
+  },
+  {
+    name: 'send_email',
+    description: "Envoyer un email via Gmail. IMPORTANT: demande TOUJOURS confirmation avant d'envoyer (destinataire, sujet, contenu).",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        to: {
+          type: 'string',
+          description: "Adresse email du destinataire",
+        },
+        subject: {
+          type: 'string',
+          description: "Sujet de l'email",
+        },
+        body: {
+          type: 'string',
+          description: "Contenu de l'email",
+        },
+      },
+      required: ['to', 'subject', 'body'],
+    },
+  },
+  {
+    name: 'search_contacts',
+    description: "Rechercher un contact dans le carnet d'adresses de l'utilisateur. Utilise quand il mentionne un prénom ou demande un numéro/email (ex: 'appelle Sophie', 'c'est quoi le mail de Marc ?')",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        query: {
+          type: 'string',
+          description: "Nom ou prénom à rechercher",
+        },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'call_contact',
+    description: "Lancer un appel téléphonique. Utilise après avoir trouvé le numéro via search_contacts.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        phone_number: {
+          type: 'string',
+          description: "Numéro de téléphone à appeler",
+        },
+        contact_name: {
+          type: 'string',
+          description: "Nom du contact (pour confirmation)",
+        },
+      },
+      required: ['phone_number'],
+    },
+  },
 ];
 
 // open_app: Claude builds the URL scheme directly, no mapping needed
 
-async function executeWebSearch(query: string): Promise<string> {
+/**
+ * Extract readable text from HTML (strip tags, scripts, styles)
+ */
+function extractTextFromHtml(html: string, maxChars = 3000): string {
+  // Remove scripts, styles, nav, footer, header
+  let text = html
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<nav[^>]*>[\s\S]*?<\/nav>/gi, '')
+    .replace(/<footer[^>]*>[\s\S]*?<\/footer>/gi, '')
+    .replace(/<header[^>]*>[\s\S]*?<\/header>/gi, '')
+    .replace(/<aside[^>]*>[\s\S]*?<\/aside>/gi, '');
+  
+  // Replace common block elements with newlines
+  text = text.replace(/<(?:p|div|br|h[1-6]|li|tr)[^>]*>/gi, '\n');
+  // Strip remaining tags
+  text = text.replace(/<[^>]+>/g, ' ');
+  // Decode HTML entities
+  text = text.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#x27;/g, "'").replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+  // Clean up whitespace
+  text = text.replace(/[ \t]+/g, ' ').replace(/\n\s*\n/g, '\n').trim();
+  
+  return text.slice(0, maxChars);
+}
+
+/**
+ * Fetch and extract content from a URL
+ */
+async function fetchPageContent(url: string, maxChars = 3000): Promise<string | null> {
   try {
-    // Use DuckDuckGo HTML for search results (no API key needed)
-    const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    
     const res = await fetch(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; Diva/1.0)',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml',
+        'Accept-Language': 'fr-FR,fr;q=0.9',
       },
+      signal: controller.signal,
+      redirect: 'follow',
+    });
+    
+    clearTimeout(timeout);
+    if (!res.ok) return null;
+    
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('text/html')) return null;
+    
+    const html = await res.text();
+    return extractTextFromHtml(html, maxChars);
+  } catch {
+    return null;
+  }
+}
+
+async function executeWebSearch(query: string): Promise<string> {
+  const braveKey = process.env['BRAVE_SEARCH_API_KEY'];
+  
+  if (braveKey) {
+    try {
+      const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=5&search_lang=fr`;
+      const res = await fetch(url, {
+        headers: {
+          'Accept': 'application/json',
+          'Accept-Encoding': 'gzip',
+          'X-Subscription-Token': braveKey,
+        },
+      });
+
+      if (!res.ok) throw new Error(`Brave API ${res.status}`);
+      const data = await res.json() as { web?: { results?: { title: string; url: string; description: string; published?: string }[] } };
+      
+      const results = data.web?.results || [];
+      if (results.length === 0) return `Aucun résultat trouvé pour "${query}"`;
+      
+      // Format search results
+      const formatted = results.map((r, i) => {
+        let line = `${i + 1}. ${r.title}\n   ${r.description}`;
+        if (r.published) line += `\n   Date: ${r.published}`;
+        return line;
+      });
+      
+      let output = `Résultats de recherche pour "${query}":\n\n` + formatted.join('\n\n');
+      
+      // Fetch content from top result only (1000 chars max) — faster
+      const pageFetches = results.slice(0, 1).map(r => fetchPageContent(r.url, 1000));
+      const pageContents = await Promise.all(pageFetches);
+      
+      for (let i = 0; i < pageContents.length; i++) {
+        if (pageContents[i]) {
+          output += `\n\n--- Contenu détaillé de "${results[i].title}" ---\n${pageContents[i]}`;
+        }
+      }
+      
+      return output;
+    } catch (e) {
+      console.error('Brave Search failed, falling back to DDG:', e);
+    }
+  }
+
+  // Fallback: DuckDuckGo HTML scraping
+  try {
+    const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Diva/1.0)' },
     });
     const html = await res.text();
     
-    // Extract result snippets from DDG HTML
     const results: string[] = [];
     const snippetRegex = /<a class="result__snippet"[^>]*>(.*?)<\/a>/gs;
     const titleRegex = /class="result__a"[^>]*>(.*?)<\/a>/gs;
@@ -393,6 +627,7 @@ export class Orchestrator {
   private activeRequests: Map<string, ActiveRequest> = new Map();
   private userActiveRequest: Map<string, string> = new Map(); // userId → requestId
   private sessionHistory: Map<WebSocket, { role: 'user' | 'assistant'; content: string }[]> = new Map(); // in-memory conversation per WS session
+  private userHistory: Map<string, { messages: { role: 'user' | 'assistant'; content: string }[]; lastActivity: number }> = new Map(); // persistent per userId across reconnects
 
   constructor(
     logger: FastifyBaseLogger,
@@ -428,26 +663,53 @@ export class Orchestrator {
       this.logger.info({ msg: 'Client disconnected', userId });
       this.cancelUserRequest(userId);
 
-      // Extract memories from conversation (async, fire-and-forget)
+      // Save session history to persistent userHistory (survives reconnects)
       const history = this.sessionHistory.get(socket);
-      this.logger.info({
-        msg: '[MEMORY-DEBUG] WS close — checking history',
-        userId,
-        hasHistory: !!history,
-        historyLength: history?.length ?? 0,
-        historyPreview: history?.map(m => `${m.role}: ${m.content.slice(0, 80)}`),
-      });
-      if (history && history.length >= 2) {
-        const conversationId = `ws-${Date.now()}`;
-        this.logger.info({ msg: '[MEMORY-DEBUG] Triggering extractMemories', userId, conversationId });
-        this.extractMemories(userId, history, conversationId)
-          .then(() => this.logger.info({ msg: '[MEMORY-DEBUG] extractMemories SUCCESS', userId, conversationId }))
-          .catch(err => this.logger.error({ msg: '[MEMORY-DEBUG] extractMemories FAILED', error: String(err), userId, conversationId }));
-      } else {
-        this.logger.warn({ msg: '[MEMORY-DEBUG] Skipped extraction — history too short or missing', userId });
+      if (history && history.length > 0) {
+        const existing = this.userHistory.get(userId);
+        if (existing) {
+          // Append new messages to existing history
+          existing.messages.push(...history);
+          // Keep last 20 messages
+          if (existing.messages.length > 20) {
+            existing.messages.splice(0, existing.messages.length - 20);
+          }
+          existing.lastActivity = Date.now();
+        } else {
+          this.userHistory.set(userId, { messages: [...history], lastActivity: Date.now() });
+        }
       }
-
       this.sessionHistory.delete(socket);
+
+      // Delay memory extraction — only extract after 30s of inactivity
+      // (avoids extracting on brief reconnects)
+      const EXTRACT_DELAY_MS = 30_000;
+      setTimeout(() => {
+        const userHist = this.userHistory.get(userId);
+        if (!userHist || userHist.messages.length < 2) return;
+        
+        // Only extract if user hasn't reconnected since
+        const timeSinceActivity = Date.now() - userHist.lastActivity;
+        if (timeSinceActivity < EXTRACT_DELAY_MS - 1000) {
+          this.logger.info({ msg: '[MEMORY-DEBUG] User reconnected, skipping extraction', userId });
+          return;
+        }
+
+        const conversationId = `ws-${userHist.lastActivity}`;
+        this.logger.info({
+          msg: '[MEMORY-DEBUG] Triggering extractMemories (delayed)',
+          userId,
+          conversationId,
+          messageCount: userHist.messages.length,
+        });
+        this.extractMemories(userId, userHist.messages, conversationId)
+          .then(() => {
+            this.logger.info({ msg: '[MEMORY-DEBUG] extractMemories SUCCESS', userId, conversationId });
+            // Clear history after successful extraction
+            this.userHistory.delete(userId);
+          })
+          .catch(err => this.logger.error({ msg: '[MEMORY-DEBUG] extractMemories FAILED', error: String(err), userId, conversationId }));
+      }, EXTRACT_DELAY_MS);
     });
 
     // Welcome
@@ -475,6 +737,10 @@ export class Orchestrator {
         break;
       case 'cancel':
         this.cancelUserRequest(userId);
+        break;
+      case 'ping':
+        this.logger.debug({ msg: 'Ping received, sending pong' });
+        this.sendEvent(socket, { type: 'pong' } as any);
         break;
       // Voice-first protocol
       case 'start_listening':
@@ -602,88 +868,163 @@ export class Orchestrator {
   }
 
   /**
-   * Process a text request: LLM → TTS
+   * Process a text request: LLM → TTS (optimized with streaming TTS)
    */
   private async processTextRequest(
     socket: WebSocket,
     request: ActiveRequest,
     text: string,
   ): Promise<void> {
+    const t0 = Date.now();
+    const metrics = { prep: 0, search: 0, llm: 0, tools: 0, tts: 0, total: 0 };
+
     try {
       // 1. LLM
       this.setState(socket, request, RequestState.THINKING);
 
       // Get/create session history for this WS connection
       if (!this.sessionHistory.has(socket)) {
-        this.sessionHistory.set(socket, []);
+        const existingUserHist = this.userHistory.get(request.userId);
+        if (existingUserHist && existingUserHist.messages.length > 0) {
+          this.sessionHistory.set(socket, [...existingUserHist.messages]);
+          this.logger.info({ msg: 'Restored history', count: existingUserHist.messages.length });
+        } else {
+          this.sessionHistory.set(socket, []);
+        }
       }
       const sessionHistory = this.sessionHistory.get(socket)!;
 
-      // Retrieve relevant memories
-      const memories = await this.retrieveMemories(request.userId, text);
+      // Parallel: memories + user settings
+      const tPrep = Date.now();
+      const [memories, userSettings] = await Promise.all([
+        this.retrieveMemories(request.userId, text),
+        (async (): Promise<any> => {
+          try {
+            const { data } = await getSupabase()
+              .from('users')
+              .select('settings')
+              .eq('id', request.userId)
+              .single();
+            return data?.settings;
+          } catch { return undefined; }
+        })(),
+      ]);
+      metrics.prep = Date.now() - tPrep;
 
-      // Load user settings for personality
-      let userSettings: any;
-      try {
-        const supabase = getSupabase();
-        const { data } = await supabase
-          .from('users')
-          .select('settings')
-          .eq('id', request.userId)
-          .single();
-        if (data?.settings) userSettings = data.settings as Record<string, unknown>;
-      } catch { /* use defaults */ }
-
-      // Add user message to session history
       sessionHistory.push({ role: 'user', content: text });
 
-      // LLM call with tool support
+      const userHist = this.userHistory.get(request.userId);
+      if (userHist) userHist.lastActivity = Date.now();
+
+      // Pre-search: skip for small talk, confirmations, short queries, or personal questions
+      const isSmallTalk = /^(salut|bonjour|hey|coucou|ça va|comment vas|merci|au revoir|bonne nuit|ok|d'accord|oui|non|cool|super|parfait|comment tu t'appelles|qui es[- ]tu|c'est quoi ton nom|rappelle[- ]?toi|souviens[- ]?toi|tu te souviens|qu'?est[- ]ce que tu sais sur moi)[\s?!.,]*$/i.test(text.trim());
+      const isConfirmation = /^(oui|non|ok|d'accord|vas[- ]?y|fais[- ]?le|ajoute|confirme|annule|stop|arrête|c'est bon|c'est ça|exactement|tout à fait|je veux bien|s'il te pla[iî]t|please)/i.test(text.trim());
+      const isTooShort = text.trim().split(/\s+/).length <= 3 && !text.includes('?');
+      const isPersonal = /mon\s+(agenda|calendrier|planning|rdv|rendez|mail|message|notif)/i.test(text);
+      const isActionRequest = /(ajoute|supprime|crée|envoie|lis|ouvre|rappelle|met|mets)[\s-]/i.test(text.trim());
+      const skipSearch = isSmallTalk || isConfirmation || isTooShort || isPersonal || isActionRequest;
+
+      let preSearchContext = '';
+      if (!skipSearch) {
+        const tSearch = Date.now();
+        this.logger.info({ msg: 'Pre-search: querying Brave', query: text.slice(0, 60) });
+        try {
+          const searchResult = await executeWebSearch(text);
+          preSearchContext = `\n\n[Résultats web récents]:\n${searchResult}\n\nNous sommes en mars 2026. Base-toi sur ces résultats.`;
+        } catch (e) {
+          this.logger.warn({ msg: 'Pre-search failed', error: String(e) });
+        }
+        metrics.search = Date.now() - tSearch;
+      }
+
+      // LLM call
+      const tLlm = Date.now();
       let llmResult = await this.llm.chat({
         userId: request.userId,
-        message: text,
+        message: preSearchContext ? `${text}${preSearchContext}` : text,
         history: sessionHistory.slice(0, -1),
         memories,
         tools: ELIO_TOOLS,
         userSettings,
       });
+      metrics.llm = Date.now() - tLlm;
 
       if (request.cancelled) return;
 
-      // Handle tool use (single round)
-      const urlsToOpen: string[] = [];
+      // Handle tool use
       if (llmResult.toolUse && llmResult.toolUse.length > 0) {
-        const toolResults = await this.executeTools(llmResult.toolUse, request.userId);
+        const tTools = Date.now();
+        const toolResults = await this.executeTools(llmResult.toolUse, request.userId, socket);
         for (const tool of llmResult.toolUse) {
           const openUrl = (tool as unknown as Record<string, unknown>)._openUrl as string | undefined;
-          if (openUrl) urlsToOpen.push(openUrl);
-        }
-        for (const url of urlsToOpen) {
-          this.sendEvent(socket, { type: 'open_url', url, requestId: request.id } as ServerEvent);
+          if (openUrl) this.sendEvent(socket, { type: 'open_url', url: openUrl, requestId: request.id } as ServerEvent);
         }
 
-        // Get final answer after tool results
-        const toolContext = toolResults.map(r => `[Résultat de ${r.name}]: ${r.result}`).join('\n');
+        const toolContext = toolResults.map(r => `[${r.name}]: ${r.result}`).join('\n');
         llmResult = await this.llm.chat({
           userId: request.userId,
           message: toolContext,
           history: [
             ...sessionHistory.slice(0, -1),
             { role: 'user' as const, content: text },
-            { role: 'assistant' as const, content: llmResult.text || '[utilisation outil]' },
+            { role: 'assistant' as const, content: llmResult.text || '[tool]' },
           ],
           memories,
           userSettings,
         });
+        metrics.tools = Date.now() - tTools;
         if (request.cancelled) return;
       }
 
-      const fullText = llmResult.text;
+      // Clean LLM output for TTS
+      const fullText = this.cleanForTTS(llmResult.text);
 
-      // Single TTS call for the entire response — smooth, no gaps
+      // Streaming TTS: split into sentences and synthesize in parallel
       if (fullText.trim()) {
         this.setState(socket, request, RequestState.SYNTHESIZING);
-        const ttsResult = await this.synthesize(request.id, fullText.trim());
-        this.sendEvent(socket, { type: 'tts_audio', audio: ttsResult.audio_base64, requestId: request.id });
+        const tTts = Date.now();
+
+        // Split into sentences (. ! ? or long pause)
+        const sentences = fullText
+          .split(/(?<=[.!?])\s+/)
+          .map(s => s.trim())
+          .filter(s => s.length > 0);
+
+        if (sentences.length <= 2) {
+          // Short response: single TTS call (less overhead)
+          const ttsResult = await this.synthesize(request.id, fullText.trim());
+          this.sendEvent(socket, { type: 'tts_audio', audio: ttsResult.audio_base64, requestId: request.id });
+        } else {
+          // Long response: parallel TTS with ordered streaming output
+          // Start all TTS jobs in parallel, but send in order as they complete
+          const pending = new Map<number, string | null>(); // index -> audio or null if pending
+          let nextToSend = 0;
+          let completed = 0;
+
+          await Promise.all(sentences.map(async (sentence, i) => {
+            pending.set(i, null); // Mark as pending
+            try {
+              const result = await this.synthesize(`${request.id}-${i}`, sentence);
+              pending.set(i, result.audio_base64);
+              completed++;
+              
+              // Send all ready chunks in order
+              while (pending.has(nextToSend) && pending.get(nextToSend) !== null) {
+                if (request.cancelled) return;
+                const audio = pending.get(nextToSend)!;
+                this.sendEvent(socket, { type: 'tts_audio', audio, requestId: request.id });
+                pending.delete(nextToSend);
+                nextToSend++;
+              }
+            } catch (e) {
+              this.logger.error({ err: e, sentence, index: i }, 'TTS sentence failed');
+              pending.set(i, ''); // Empty string to not block
+              completed++;
+            }
+          }));
+        }
+
+        metrics.tts = Date.now() - tTts;
         this.setState(socket, request, RequestState.STREAMING_AUDIO);
       }
 
@@ -692,11 +1033,37 @@ export class Orchestrator {
 
       this.sendEvent(socket, { type: 'text_response', text: fullText, requestId: request.id, isPartial: false });
 
+      metrics.total = Date.now() - t0;
+      this.logger.info({
+        msg: 'Request completed',
+        metrics,
+        totalMs: metrics.total,
+        breakdown: `prep=${metrics.prep}ms search=${metrics.search}ms llm=${metrics.llm}ms tools=${metrics.tools}ms tts=${metrics.tts}ms`,
+      });
+
       this.setState(socket, request, RequestState.COMPLETED);
       this.cleanupRequest(request.id);
     } catch (error) {
       this.handleError(socket, request, error);
     }
+  }
+
+  /** Clean LLM text for TTS: strip markdown, emojis, URLs */
+  private cleanForTTS(text: string): string {
+    return text
+      .replace(/```[\s\S]*?```/g, '')
+      .replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/\*([^*]+)\*/g, '$1')
+      .replace(/__([^_]+)__/g, '$1')
+      .replace(/_([^_]+)_/g, '$1')
+      .replace(/#{1,6}\s/g, '')
+      .replace(/[-*]\s/g, '')
+      .replace(/\d+\.\s/g, '')
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+      .replace(/https?:\/\/\S+/g, '')
+      .replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{27BF}\u{2300}-\u{23FF}\u{2B50}\u{2934}-\u{2935}\u{25AA}-\u{25FE}\u{2702}-\u{27B0}\u{FE0F}\u{200D}\u{20E3}\u{E0020}-\u{E007F}]/gu, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
   }
 
   /**
@@ -757,7 +1124,7 @@ export class Orchestrator {
 
     // prompt field
     parts.push(Buffer.from(
-      `--${boundary}\r\nContent-Disposition: form-data; name="prompt"\r\n\r\nElio est un assistant vocal intelligent.\r\n`
+      `--${boundary}\r\nContent-Disposition: form-data; name="prompt"\r\n\r\nDiva est un assistant vocal intelligent.\r\n`
     ));
 
     parts.push(Buffer.from(`--${boundary}--\r\n`));
@@ -793,7 +1160,7 @@ export class Orchestrator {
   /**
    * Send text to TTS worker via Redis.
    */
-  private async executeTools(toolUses: import('@anthropic-ai/sdk').Anthropic.ToolUseBlock[], userId?: string): Promise<{ name: string; result: string }[]> {
+  private async executeTools(toolUses: import('@anthropic-ai/sdk').Anthropic.ToolUseBlock[], userId?: string, socket?: WebSocket): Promise<{ name: string; result: string }[]> {
     const results: { name: string; result: string }[] = [];
     for (const tool of toolUses) {
       const input = tool.input as Record<string, string>;
@@ -834,12 +1201,104 @@ export class Orchestrator {
             break;
           }
           case 'read_notifications': {
-            // Request notifications from the client app via WebSocket
+            if (!socket) {
+              results.push({ name: tool.name, result: 'WebSocket non disponible pour lire les notifications.' });
+              break;
+            }
             const notifResult = await this.requestNotificationsFromClient(
               socket,
               tool.input as { app?: string; contact?: string; limit?: number },
+              userId,
             );
             results.push({ name: tool.name, result: notifResult });
+            break;
+          }
+          case 'read_telegram': {
+            if (!userId) {
+              results.push({ name: tool.name, result: 'Utilisateur non connecté.' });
+              break;
+            }
+            const isConnected = await TelegramUser.isConnected(userId);
+            if (!isConnected) {
+              results.push({ name: tool.name, result: 'Telegram non connecté. Dis à l\'utilisateur d\'aller dans Paramètres → Telegram pour connecter son compte.' });
+              break;
+            }
+            const telegramInput = input as { limit?: number };
+            const telegramResult = await TelegramUser.readMessages(userId, {
+              limit: telegramInput.limit || 10,
+            });
+            if (telegramResult.success && telegramResult.messages) {
+              results.push({ name: tool.name, result: telegramResult.messages.join('\n') || 'Aucun message.' });
+            } else {
+              results.push({ name: tool.name, result: telegramResult.error || 'Erreur lors de la lecture des messages.' });
+            }
+            break;
+          }
+          case 'read_calendar': {
+            if (!socket) {
+              results.push({ name: tool.name, result: 'WebSocket non disponible pour lire le calendrier.' });
+              break;
+            }
+            const daysAhead = (input as any).days_ahead ?? 14;
+            const calResult = await this.requestCalendarFromClient(socket, daysAhead);
+            results.push({ name: tool.name, result: calResult });
+            break;
+          }
+          case 'add_calendar': {
+            if (!socket) {
+              results.push({ name: tool.name, result: 'WebSocket non disponible pour ajouter au calendrier.' });
+              break;
+            }
+            const eventData = input as unknown as {
+              title: string;
+              start_date: string;
+              end_date?: string;
+              location?: string;
+              notes?: string;
+              all_day?: boolean;
+            };
+            const addResult = await this.requestAddCalendarFromClient(socket, eventData);
+            results.push({ name: tool.name, result: addResult });
+            break;
+          }
+          case 'read_emails': {
+            if (!userId) {
+              results.push({ name: tool.name, result: 'Utilisateur non identifié.' });
+              break;
+            }
+            const emailParams = input as unknown as { count?: number; query?: string };
+            const emailResult = await this.readEmailsFromGmail(userId, emailParams.count ?? 5, emailParams.query);
+            results.push({ name: tool.name, result: emailResult });
+            break;
+          }
+          case 'send_email': {
+            if (!userId) {
+              results.push({ name: tool.name, result: 'Utilisateur non identifié.' });
+              break;
+            }
+            const sendParams = input as unknown as { to: string; subject: string; body: string };
+            const sendResult = await this.sendEmailViaGmail(userId, sendParams);
+            results.push({ name: tool.name, result: sendResult });
+            break;
+          }
+          case 'search_contacts': {
+            if (!socket) {
+              results.push({ name: tool.name, result: 'WebSocket non disponible.' });
+              break;
+            }
+            const searchParams = input as unknown as { query: string };
+            const searchResult = await this.requestSearchContactsFromClient(socket, searchParams.query);
+            results.push({ name: tool.name, result: searchResult });
+            break;
+          }
+          case 'call_contact': {
+            if (!socket) {
+              results.push({ name: tool.name, result: 'WebSocket non disponible.' });
+              break;
+            }
+            const callParams = input as unknown as { phone_number: string; contact_name?: string };
+            const callResult = await this.requestCallFromClient(socket, callParams.phone_number, callParams.contact_name);
+            results.push({ name: tool.name, result: callResult });
             break;
           }
           default:
@@ -859,7 +1318,11 @@ export class Orchestrator {
       const res = await fetch('http://localhost:8880/v1/audio/speech', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ input: text, voice: 'fr' }),
+        body: JSON.stringify({ 
+          input: text, 
+          voice: 'fr',
+          speed: 0.9, // Slightly slower for better clarity
+        }),
       });
 
       if (!res.ok) throw new Error(`Piper HTTP ${res.status}`);
@@ -1038,11 +1501,26 @@ export class Orchestrator {
   }
 
   /** Retrieve relevant memories via RAG */
+  // Simple memory cache: userId -> { memories, timestamp }
+  private memoryCache = new Map<string, { memories: string[]; timestamp: number }>();
+  private readonly MEMORY_CACHE_TTL = 60_000; // 1 minute
+
   private async retrieveMemories(userId: string, query: string): Promise<string[]> {
+    // Check cache first
+    const cached = this.memoryCache.get(userId);
+    if (cached && Date.now() - cached.timestamp < this.MEMORY_CACHE_TTL) {
+      return cached.memories;
+    }
+
     try {
       const retriever = new MemoryRetriever(this.logger);
       const memories = await retriever.retrieve(userId, query, 5);
-      return memories.map(m => `[${m.category}] ${m.content}`);
+      const formatted = memories.map(m => `[${m.category}] ${m.content}`);
+      
+      // Cache for 1 minute
+      this.memoryCache.set(userId, { memories: formatted, timestamp: Date.now() });
+      
+      return formatted;
     } catch (error) {
       this.logger.error({ msg: 'Failed to retrieve memories', error });
       return [];
@@ -1056,6 +1534,7 @@ export class Orchestrator {
   private async requestNotificationsFromClient(
     socket: import('ws').WebSocket,
     filter: { app?: string; contact?: string; limit?: number },
+    userId?: string,
   ): Promise<string> {
     const APP_PACKAGES: Record<string, string[]> = {
       whatsapp: ['com.whatsapp', 'com.whatsapp.w4b'],
@@ -1128,6 +1607,24 @@ export class Orchestrator {
                 ? `Aucun message de ${filter.contact}.`
                 : 'Aucun nouveau message correspondant.');
             } else {
+              // Also forward to Telegram User's "Saved Messages" if connected (async, don't wait)
+              if (userId) {
+                for (const n of notifications) {
+                  const time = new Date(n.timestamp).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+                  const notifText = `📱 ${n.appName || n.packageName || 'Unknown'}\n**${n.title || ''}**\n${n.bigText || n.text || ''}\n🕐 ${time}`;
+                  
+                  // Try user API first (Saved Messages), fall back to bot
+                  TelegramUser.sendToSavedMessages(userId, notifText).catch(() => {
+                    // Fall back to bot API if user API not connected
+                    sendNotificationToTelegram(userId, {
+                      app: n.appName || n.packageName || 'Unknown',
+                      title: n.title || '',
+                      body: n.bigText || n.text || '',
+                      time,
+                    }).catch(() => {});
+                  });
+                }
+              }
               resolve(formatted.trim());
             }
           }
@@ -1136,6 +1633,369 @@ export class Orchestrator {
 
       socket.on('message', handler);
     });
+  }
+
+  /**
+   * Request calendar events from the client app via WebSocket.
+   */
+  private async requestCalendarFromClient(
+    socket: import('ws').WebSocket,
+    daysAhead: number,
+  ): Promise<string> {
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        resolve("Le téléphone n'a pas répondu. Vérifie que la permission calendrier est activée.");
+      }, 8000);
+
+      // Send request to client
+      this.sendEvent(socket, {
+        type: 'request_calendar',
+        daysAhead,
+      } as any);
+
+      const handler = (raw: Buffer) => {
+        try {
+          const msg = JSON.parse(raw.toString());
+          if (msg.type === 'calendar_response') {
+            clearTimeout(timeout);
+            socket.removeListener('message', handler);
+
+            if (msg.error) {
+              resolve(`Erreur calendrier : ${msg.error}`);
+              return;
+            }
+
+            resolve(msg.formatted || "Aucun événement trouvé.");
+          }
+        } catch { /* ignore */ }
+      };
+
+      socket.on('message', handler);
+    });
+  }
+
+  /**
+   * Request to add a calendar event via the client app.
+   */
+  private async requestAddCalendarFromClient(
+    socket: import('ws').WebSocket,
+    eventData: {
+      title: string;
+      start_date: string;
+      end_date?: string;
+      location?: string;
+      notes?: string;
+      all_day?: boolean;
+    },
+  ): Promise<string> {
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        resolve("Le téléphone n'a pas répondu. Vérifie que la permission calendrier est activée.");
+      }, 8000);
+
+      this.sendEvent(socket, {
+        type: 'request_add_calendar',
+        event: eventData,
+      } as any);
+
+      const handler = (raw: Buffer) => {
+        try {
+          const msg = JSON.parse(raw.toString());
+          if (msg.type === 'add_calendar_response') {
+            clearTimeout(timeout);
+            socket.removeListener('message', handler);
+
+            if (msg.error) {
+              resolve(`Erreur création événement : ${msg.error}`);
+              return;
+            }
+
+            resolve(msg.message || "Événement ajouté au calendrier.");
+          }
+        } catch { /* ignore */ }
+      };
+
+      socket.on('message', handler);
+    });
+  }
+
+  /**
+   * Request contact search from client app (on-device)
+   */
+  private async requestSearchContactsFromClient(
+    socket: import('ws').WebSocket,
+    query: string,
+  ): Promise<string> {
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        resolve("Le téléphone n'a pas répondu. Vérifie que la permission contacts est activée.");
+      }, 8000);
+
+      this.sendEvent(socket, {
+        type: 'request_search_contacts',
+        query,
+      } as any);
+
+      const handler = (raw: Buffer) => {
+        try {
+          const msg = JSON.parse(raw.toString());
+          if (msg.type === 'search_contacts_response') {
+            clearTimeout(timeout);
+            socket.removeListener('message', handler);
+
+            if (msg.error) {
+              resolve(`Erreur recherche contacts : ${msg.error}`);
+              return;
+            }
+
+            resolve(msg.formatted || "Aucun contact trouvé.");
+          }
+        } catch { /* ignore */ }
+      };
+
+      socket.on('message', handler);
+    });
+  }
+
+  /**
+   * Request phone call from client app
+   */
+  private async requestCallFromClient(
+    socket: import('ws').WebSocket,
+    phoneNumber: string,
+    contactName?: string,
+  ): Promise<string> {
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        resolve("Le téléphone n'a pas répondu.");
+      }, 8000);
+
+      this.sendEvent(socket, {
+        type: 'request_call',
+        phone_number: phoneNumber,
+        contact_name: contactName,
+      } as any);
+
+      const handler = (raw: Buffer) => {
+        try {
+          const msg = JSON.parse(raw.toString());
+          if (msg.type === 'call_response') {
+            clearTimeout(timeout);
+            socket.removeListener('message', handler);
+
+            if (msg.error) {
+              resolve(`Erreur appel : ${msg.error}`);
+              return;
+            }
+
+            resolve(msg.message || "Appel lancé.");
+          }
+        } catch { /* ignore */ }
+      };
+
+      socket.on('message', handler);
+    });
+  }
+
+  /**
+   * Read emails directly from Gmail API using stored tokens
+   */
+  private async readEmailsFromGmail(userId: string, count: number, query?: string): Promise<string> {
+    try {
+      const { createClient } = await import('@supabase/supabase-js');
+      const supabase = createClient(
+        process.env['SUPABASE_URL']!,
+        process.env['SUPABASE_SERVICE_ROLE_KEY']!
+      );
+
+      // Get tokens
+      const { data: tokenData } = await supabase
+        .from('gmail_tokens')
+        .select('*')
+        .eq('user_id', userId)
+        .single();
+
+      if (!tokenData) {
+        return "Gmail n'est pas connecté. Va dans les réglages de l'app pour te connecter.";
+      }
+
+      // Check if token is expired and refresh if needed
+      let accessToken = tokenData.access_token;
+      if (new Date(tokenData.expires_at) < new Date()) {
+        // Refresh token
+        const refreshed = await this.refreshGmailToken(tokenData.refresh_token);
+        if (!refreshed) {
+          return "Le token Gmail a expiré. Reconnecte-toi dans les réglages.";
+        }
+        accessToken = refreshed.access_token;
+        
+        // Update in DB
+        await supabase.from('gmail_tokens').update({
+          access_token: refreshed.access_token,
+          expires_at: new Date(Date.now() + refreshed.expires_in * 1000).toISOString(),
+          updated_at: new Date().toISOString(),
+        }).eq('user_id', userId);
+      }
+
+      // Build query - default to today's emails
+      let gmailQuery = query || 'newer_than:1d';
+      
+      // Fetch messages list
+      const listUrl = new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages');
+      listUrl.searchParams.set('maxResults', String(Math.min(count, 20)));
+      if (gmailQuery) listUrl.searchParams.set('q', gmailQuery);
+
+      const listRes = await fetch(listUrl.toString(), {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+
+      if (!listRes.ok) {
+        const err = await listRes.text();
+        this.logger.error({ err }, 'Gmail list failed');
+        return `Erreur Gmail: ${err}`;
+      }
+
+      const listData = await listRes.json() as { messages?: { id: string }[] };
+      
+      if (!listData.messages || listData.messages.length === 0) {
+        return "Aucun email trouvé pour cette recherche.";
+      }
+
+      // Fetch each message details
+      const emails: { from: string; subject: string; date: string; snippet: string }[] = [];
+      
+      for (const msg of listData.messages.slice(0, count)) {
+        const msgRes = await fetch(
+          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`,
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        
+        if (msgRes.ok) {
+          const msgData = await msgRes.json() as {
+            snippet: string;
+            payload: { headers: { name: string; value: string }[] };
+          };
+          
+          const headers = msgData.payload.headers;
+          emails.push({
+            from: headers.find(h => h.name === 'From')?.value || 'Inconnu',
+            subject: headers.find(h => h.name === 'Subject')?.value || '(sans sujet)',
+            date: headers.find(h => h.name === 'Date')?.value || '',
+            snippet: msgData.snippet,
+          });
+        }
+      }
+
+      // Format for context
+      if (emails.length === 0) {
+        return "Aucun email trouvé.";
+      }
+
+      const formatted = emails.map((e, i) => 
+        `${i + 1}. De: ${e.from}\n   Sujet: ${e.subject}\n   Aperçu: ${e.snippet}`
+      ).join('\n\n');
+
+      return `Tu as ${emails.length} email(s):\n\n${formatted}`;
+    } catch (err) {
+      this.logger.error({ err }, 'readEmailsFromGmail error');
+      return `Erreur lecture emails: ${String(err)}`;
+    }
+  }
+
+  /**
+   * Send email via Gmail API using stored tokens
+   */
+  private async sendEmailViaGmail(
+    userId: string,
+    params: { to: string; subject: string; body: string }
+  ): Promise<string> {
+    try {
+      const { createClient } = await import('@supabase/supabase-js');
+      const supabase = createClient(
+        process.env['SUPABASE_URL']!,
+        process.env['SUPABASE_SERVICE_ROLE_KEY']!
+      );
+
+      // Get tokens
+      const { data: tokenData } = await supabase
+        .from('gmail_tokens')
+        .select('*')
+        .eq('user_id', userId)
+        .single();
+
+      if (!tokenData) {
+        return "Gmail n'est pas connecté. Va dans les réglages de l'app pour te connecter.";
+      }
+
+      let accessToken = tokenData.access_token;
+      if (new Date(tokenData.expires_at) < new Date()) {
+        const refreshed = await this.refreshGmailToken(tokenData.refresh_token);
+        if (!refreshed) {
+          return "Le token Gmail a expiré. Reconnecte-toi dans les réglages.";
+        }
+        accessToken = refreshed.access_token;
+        
+        await supabase.from('gmail_tokens').update({
+          access_token: refreshed.access_token,
+          expires_at: new Date(Date.now() + refreshed.expires_in * 1000).toISOString(),
+          updated_at: new Date().toISOString(),
+        }).eq('user_id', userId);
+      }
+
+      // Create email
+      const emailContent = [
+        `To: ${params.to}`,
+        `Subject: ${params.subject}`,
+        'Content-Type: text/plain; charset=utf-8',
+        '',
+        params.body,
+      ].join('\r\n');
+
+      const encodedEmail = Buffer.from(emailContent).toString('base64url');
+
+      const sendRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ raw: encodedEmail }),
+      });
+
+      if (!sendRes.ok) {
+        const err = await sendRes.text();
+        this.logger.error({ err }, 'Gmail send failed');
+        return `Erreur envoi: ${err}`;
+      }
+
+      return `Email envoyé à ${params.to} avec succès !`;
+    } catch (err) {
+      this.logger.error({ err }, 'sendEmailViaGmail error');
+      return `Erreur envoi email: ${String(err)}`;
+    }
+  }
+
+  /**
+   * Refresh Gmail access token
+   */
+  private async refreshGmailToken(refreshToken: string): Promise<{ access_token: string; expires_in: number } | null> {
+    try {
+      const res = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: process.env['GOOGLE_CLIENT_ID_WEB'] || '794649959450-fc4ujikilh1eavfnbh3ov4aq3uphvq91.apps.googleusercontent.com',
+          client_secret: process.env['GOOGLE_CLIENT_SECRET'] || '',
+          refresh_token: refreshToken,
+          grant_type: 'refresh_token',
+        }),
+      });
+
+      if (!res.ok) return null;
+      return await res.json() as { access_token: string; expires_in: number };
+    } catch {
+      return null;
+    }
   }
 
   /** Extract and store memories after conversation ends */

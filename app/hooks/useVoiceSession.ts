@@ -8,8 +8,11 @@ import { Linking, Platform } from 'react-native';
 import { Audio } from 'expo-av';
 import type { OrbState } from '../components/Orb/OrbView';
 import { getNotifications } from '../modules/notification-reader/src';
+import { getEvents, formatEventsForContext, createEvent } from '../lib/calendar';
+import { getEmails, sendEmail, formatEmailsForContext, isSignedIn as isGmailSignedIn } from '../lib/gmail';
+import { searchContacts, formatContactsForContext, callPhone } from '../lib/contacts';
 
-const API_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://72.60.155.227:4000';
+const API_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://72.60.155.227:3001';
 const WS_URL = API_URL.replace('http', 'ws');
 
 interface VoiceSessionOptions {
@@ -85,110 +88,345 @@ export function useVoiceSession({ token }: VoiceSessionOptions): VoiceSessionRet
   const audioQueueRef = useRef<string[]>([]); // queue of base64 audio chunks
   const isPlayingRef = useRef(false);
 
-  // --- WebSocket ---
+  // --- WebSocket with auto-reconnect ---
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const intentionalCloseRef = useRef(false);
+  const reconnectDelayRef = useRef(1000); // Start with 1s, backoff on failures
+
   useEffect(() => {
     if (!token) return;
 
-    const ws = new WebSocket(`${WS_URL}/ws?token=${token}`);
-    wsRef.current = ws;
+    intentionalCloseRef.current = false;
 
-    ws.onopen = () => {
-      setIsConnected(true);
-      setOrbState('idle');
-    };
+    function connect() {
+      const ws = new WebSocket(`${WS_URL}/ws?token=${token}`);
+      wsRef.current = ws;
 
-    ws.onmessage = async (event) => {
-      if (typeof event.data !== 'string') {
-        await playAudio(event.data);
-        return;
-      }
+      // Ping interval to keep connection alive (every 25s)
+      let pingInterval: ReturnType<typeof setInterval> | null = null;
 
-      try {
-        const msg = JSON.parse(event.data);
-        switch (msg.type) {
-          case 'state':
-          case 'state_change':
-            if (msg.state === 'processing' || msg.state === 'THINKING') {
-              setOrbState('processing');
-            } else if (msg.state === 'speaking' || msg.state === 'SYNTHESIZING') {
-              setOrbState('speaking');
-            }
-            // Don't auto-set idle from server state — we handle it ourselves
-            break;
-
-          case 'transcription':
-          case 'transcript':
-            setTranscript(msg.text);
-            setTranscriptRole('user');
-            break;
-
-          case 'response':
-          case 'assistant_message':
-          case 'text_response': {
-            const responseText = msg.text || msg.content || '';
-            setTranscript(responseText);
-            setTranscriptRole('assistant');
-            // Don't change orbState here — TTS audio events will set 'speaking'
-            // Clear transcript after display time (audio playback handles orb state)
-            const words = responseText.split(/\s+/).length;
-            const displayMs = Math.min(15000, Math.max(5000, words * 80));
-            setTimeout(() => setTranscript(null), displayMs);
-            break;
-          }
-
-          case 'tts_audio':
-            if (msg.audio) {
-              enqueueAudio(msg.audio);
-            }
-            break;
-
-          case 'open_url':
-            if (msg.url) {
-              try { await Linking.openURL(msg.url); } catch {}
-            }
-            break;
-
-          case 'request_notifications':
-            // Server is asking for captured notifications (EL-032)
-            handleNotificationRequest(ws, msg.filter);
-            break;
-
-          case 'error':
-            setOrbState('error');
-            setTranscript(msg.message);
-            setTranscriptRole('assistant');
-            setTimeout(() => {
-              setTranscript(null);
-              if (autoListenRef.current) {
-                doStartListening();
-              } else {
-                setOrbState('idle');
-              }
-            }, 3000);
-            break;
-
-          case 'connected':
-            setOrbState('idle');
-            break;
+      ws.onopen = () => {
+        setIsConnected(true);
+        // Only set to idle if we're not actively playing audio
+        if (!isPlayingRef.current && audioQueueRef.current.length === 0) {
+          setOrbState('idle');
         }
-      } catch {
-        // ignore
-      }
-    };
+        reconnectDelayRef.current = 1000; // Reset backoff on successful connect
+        
+        // Restore auto-listen if we're in an active conversation (audio playing)
+        if (isPlayingRef.current || audioQueueRef.current.length > 0) {
+          autoListenRef.current = true;
+        }
 
-    ws.onclose = () => {
-      setIsConnected(false);
-      setOrbState('idle');
-    };
+        // Keep-alive pings — every 10s to prevent iOS/tunnel timeout
+        pingInterval = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'ping' }));
+            console.log('[WS] Ping sent');
+          }
+        }, 10000);
+        
+        // Send first ping immediately after connection
+        setTimeout(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'ping' }));
+            console.log('[WS] Initial ping sent');
+          }
+        }, 1000);
+      };
 
-    ws.onerror = () => {
-      setIsConnected(false);
-      setOrbState('error');
-    };
+      ws.onmessage = async (event) => {
+        if (typeof event.data !== 'string') {
+          await playAudio(event.data);
+          return;
+        }
+
+        try {
+          const msg = JSON.parse(event.data);
+
+          // Ignore pong responses
+          if (msg.type === 'pong') return;
+
+          switch (msg.type) {
+            case 'state':
+            case 'state_change':
+              if (msg.state === 'processing' || msg.state === 'THINKING') {
+                setOrbState('processing');
+              } else if (msg.state === 'speaking' || msg.state === 'SYNTHESIZING') {
+                setOrbState('speaking');
+              }
+              break;
+
+            case 'transcription':
+            case 'transcript':
+              setTranscript(msg.text);
+              setTranscriptRole('user');
+              break;
+
+            case 'response':
+            case 'assistant_message':
+            case 'text_response': {
+              const responseText = msg.text || msg.content || '';
+              setTranscript(responseText);
+              setTranscriptRole('assistant');
+              const words = responseText.split(/\s+/).length;
+              const displayMs = Math.min(15000, Math.max(5000, words * 80));
+              setTimeout(() => setTranscript(null), displayMs);
+              break;
+            }
+
+            case 'tts_audio':
+              if (msg.audio) {
+                enqueueAudio(msg.audio);
+              }
+              break;
+
+            case 'open_url':
+              if (msg.url) {
+                try { await Linking.openURL(msg.url); } catch {}
+              }
+              break;
+
+            case 'request_notifications':
+              handleNotificationRequest(ws, msg.filter);
+              break;
+
+            case 'request_calendar':
+              // Server asks for calendar events
+              (async () => {
+                try {
+                  const daysAhead = msg.daysAhead ?? 14;
+                  const events = await getEvents(daysAhead);
+                  const formatted = formatEventsForContext(events);
+                  if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                      type: 'calendar_response',
+                      events: events,
+                      formatted: formatted,
+                      count: events.length,
+                    }));
+                  }
+                } catch (err) {
+                  if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                      type: 'calendar_response',
+                      events: [],
+                      formatted: "Impossible d'accéder au calendrier. Vérifie les permissions.",
+                      error: String(err),
+                    }));
+                  }
+                }
+              })();
+              break;
+
+            case 'request_add_calendar':
+              // Server asks to create a calendar event
+              (async () => {
+                try {
+                  const result = await createEvent(msg.event);
+                  if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                      type: 'add_calendar_response',
+                      success: result.success,
+                      message: result.message,
+                      eventId: result.eventId,
+                    }));
+                  }
+                } catch (err) {
+                  if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                      type: 'add_calendar_response',
+                      success: false,
+                      message: `Erreur: ${String(err)}`,
+                      error: String(err),
+                    }));
+                  }
+                }
+              })();
+              break;
+
+            case 'request_read_emails':
+              // Server asks to read emails
+              (async () => {
+                try {
+                  const signedIn = await isGmailSignedIn();
+                  if (!signedIn) {
+                    if (ws.readyState === WebSocket.OPEN) {
+                      ws.send(JSON.stringify({
+                        type: 'read_emails_response',
+                        error: "Gmail non connecté. Connecte-toi dans les paramètres de l'app.",
+                      }));
+                    }
+                    return;
+                  }
+                  const emails = await getEmails(msg.count ?? 5, msg.query);
+                  const formatted = formatEmailsForContext(emails);
+                  if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                      type: 'read_emails_response',
+                      emails,
+                      formatted,
+                      count: emails.length,
+                    }));
+                  }
+                } catch (err) {
+                  if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                      type: 'read_emails_response',
+                      error: String(err),
+                    }));
+                  }
+                }
+              })();
+              break;
+
+            case 'request_send_email':
+              // Server asks to send an email
+              (async () => {
+                try {
+                  const signedIn = await isGmailSignedIn();
+                  if (!signedIn) {
+                    if (ws.readyState === WebSocket.OPEN) {
+                      ws.send(JSON.stringify({
+                        type: 'send_email_response',
+                        error: "Gmail non connecté. Connecte-toi dans les paramètres de l'app.",
+                      }));
+                    }
+                    return;
+                  }
+                  const result = await sendEmail(msg.to, msg.subject, msg.body);
+                  if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                      type: 'send_email_response',
+                      success: result.success,
+                      message: result.success ? `Email envoyé à ${msg.to}` : result.error,
+                      error: result.error,
+                    }));
+                  }
+                } catch (err) {
+                  if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                      type: 'send_email_response',
+                      error: String(err),
+                    }));
+                  }
+                }
+              })();
+              break;
+
+            case 'request_search_contacts':
+              // Server asks to search contacts (on-device)
+              (async () => {
+                try {
+                  const contacts = await searchContacts(msg.query);
+                  const formatted = formatContactsForContext(contacts);
+                  if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                      type: 'search_contacts_response',
+                      contacts,
+                      formatted,
+                      count: contacts.length,
+                    }));
+                  }
+                } catch (err) {
+                  if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                      type: 'search_contacts_response',
+                      error: String(err),
+                    }));
+                  }
+                }
+              })();
+              break;
+
+            case 'request_call':
+              // Server asks to initiate a phone call
+              (async () => {
+                try {
+                  const result = await callPhone(msg.phone_number);
+                  if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                      type: 'call_response',
+                      success: result.success,
+                      message: result.success 
+                        ? `Appel vers ${msg.contact_name || msg.phone_number} lancé` 
+                        : result.error,
+                      error: result.error,
+                    }));
+                  }
+                } catch (err) {
+                  if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                      type: 'call_response',
+                      error: String(err),
+                    }));
+                  }
+                }
+              })();
+              break;
+
+            case 'error':
+              setOrbState('error');
+              setTranscript(msg.message);
+              setTranscriptRole('assistant');
+              setTimeout(() => {
+                setTranscript(null);
+                if (autoListenRef.current) {
+                  doStartListening();
+                } else {
+                  setOrbState('idle');
+                }
+              }, 3000);
+              break;
+
+            case 'connected':
+              setOrbState('idle');
+              break;
+          }
+        } catch {
+          // ignore
+        }
+      };
+
+      ws.onclose = () => {
+        if (pingInterval) clearInterval(pingInterval);
+        setIsConnected(false);
+        // Only reset auto-listen if we're not actively in a conversation
+        // (i.e., if we're idle or explicitly stopped)
+        // Keep auto-listen if we're playing audio (transient disconnect during response)
+        if (!isPlayingRef.current && audioQueueRef.current.length === 0) {
+          autoListenRef.current = false;
+        }
+
+        // Auto-reconnect unless intentionally closed
+        if (!intentionalCloseRef.current) {
+          const delay = reconnectDelayRef.current;
+          reconnectDelayRef.current = Math.min(delay * 1.5, 10000); // Max 10s backoff
+          console.log(`[WS] Disconnected, reconnecting in ${delay}ms...`);
+          reconnectTimeoutRef.current = setTimeout(() => {
+            if (!intentionalCloseRef.current) {
+              connect();
+            }
+          }, delay);
+        } else {
+          setOrbState('idle');
+        }
+      };
+
+      ws.onerror = () => {
+        // onclose will fire after onerror, reconnect handled there
+      };
+    }
+
+    connect();
 
     return () => {
-      ws.close();
-      wsRef.current = null;
+      intentionalCloseRef.current = true;
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
     };
   }, [token]);
 
@@ -196,9 +434,20 @@ export function useVoiceSession({ token }: VoiceSessionOptions): VoiceSessionRet
   const playNextInQueue = useCallback(async () => {
     if (isPlayingRef.current || audioQueueRef.current.length === 0) {
       if (audioQueueRef.current.length === 0 && !isPlayingRef.current) {
-        // All done playing
+        // All done playing — wait for iOS to fully release audio session before recording
         if (autoListenRef.current) {
-          doStartListening();
+          // Critical: Reset audio mode and wait before starting new recording
+          try {
+            await Audio.setAudioModeAsync({ allowsRecordingIOS: false, playsInSilentModeIOS: true });
+          } catch {}
+          // Give iOS 300ms to fully release audio resources
+          setTimeout(() => {
+            if (autoListenRef.current) {
+              doStartListening();
+            } else {
+              setOrbState('idle');
+            }
+          }, 300);
         } else {
           setOrbState('idle');
         }
@@ -243,37 +492,68 @@ export function useVoiceSession({ token }: VoiceSessionOptions): VoiceSessionRet
     setTimeout(() => setOrbState('idle'), 2000);
   };
 
+  // Track if we're currently preparing a recording (prevent concurrent calls)
+  const isPreparingRecordingRef = useRef(false);
+
   // --- Recording with silence detection ---
   const doStartListening = useCallback(async () => {
+    // Prevent concurrent recording preparations
+    if (isPreparingRecordingRef.current) {
+      console.log('[Audio] Already preparing recording, skipping');
+      return;
+    }
+
     // Reset stopping flag — we're starting fresh
     stoppingRef.current = false;
 
+    // Don't start listening if WebSocket is not connected
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      console.log('[Audio] Skipping listen - WebSocket not ready');
+      setOrbState('idle');
+      return;
+    }
+
+    isPreparingRecordingRef.current = true;
+
     try {
-      // Cleanup previous recording completely
+      // Aggressive cleanup: stop any previous recording
       if (recordingRef.current) {
         try {
           const status = await recordingRef.current.getStatusAsync();
-          if (status.isRecording || status.canRecord) {
+          if (status.canRecord || status.isRecording) {
             await recordingRef.current.stopAndUnloadAsync();
           }
         } catch {}
         recordingRef.current = null;
       }
 
-      const { status } = await Audio.requestPermissionsAsync();
-      if (status !== 'granted') return;
+      // Ensure we're in playback mode first (releases any recording session)
+      try {
+        await Audio.setAudioModeAsync({
+          allowsRecordingIOS: false,
+          playsInSilentModeIOS: true,
+          staysActiveInBackground: false,
+        });
+      } catch {}
 
-      // Reset audio mode — critical after playback
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: false,
-        playsInSilentModeIOS: true,
-      });
-      // Small delay to let iOS audio session reset
-      await new Promise(r => setTimeout(r, 100));
+      const { status } = await Audio.requestPermissionsAsync();
+      if (status !== 'granted') {
+        isPreparingRecordingRef.current = false;
+        return;
+      }
+
+      // Wait for iOS to fully release audio resources
+      await new Promise(r => setTimeout(r, 250));
+
+      // Now switch to recording mode
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
         playsInSilentModeIOS: true,
+        staysActiveInBackground: false,
       });
+
+      // Another small delay before creating recording
+      await new Promise(r => setTimeout(r, 50));
 
       const { recording } = await Audio.Recording.createAsync(
         Audio.RecordingOptionsPresets.HIGH_QUALITY
@@ -283,9 +563,12 @@ export function useVoiceSession({ token }: VoiceSessionOptions): VoiceSessionRet
       recordingStartRef.current = Date.now();
       silenceStartRef.current = null;
       stoppingRef.current = false;
+      isPreparingRecordingRef.current = false; // Done preparing
       setOrbState('listening');
 
-      wsRef.current?.send(JSON.stringify({ type: 'start_listening' }));
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'start_listening' }));
+      }
 
       // Monitor audio levels + silence detection
       recording.setProgressUpdateInterval(100);
@@ -320,6 +603,7 @@ export function useVoiceSession({ token }: VoiceSessionOptions): VoiceSessionRet
       });
     } catch (err) {
       console.error('Failed to start recording:', err);
+      isPreparingRecordingRef.current = false; // Reset on error
       setOrbState('error');
       setTimeout(() => setOrbState('idle'), 2000);
     }
@@ -343,16 +627,20 @@ export function useVoiceSession({ token }: VoiceSessionOptions): VoiceSessionRet
         const reader = new FileReader();
         reader.onloadend = () => {
           const base64 = (reader.result as string).split(',')[1];
-          wsRef.current?.send(JSON.stringify({
-            type: 'audio_message',
-            audio: base64,
-            format: 'm4a',
-          }));
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            wsRef.current.send(JSON.stringify({
+              type: 'audio_message',
+              audio: base64,
+              format: 'm4a',
+            }));
+          }
         };
         reader.readAsDataURL(blob);
       }
 
-      wsRef.current?.send(JSON.stringify({ type: 'stop_listening' }));
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'stop_listening' }));
+      }
 
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: false,
@@ -368,7 +656,32 @@ export function useVoiceSession({ token }: VoiceSessionOptions): VoiceSessionRet
 
   // --- Public API ---
 
-  /** Single tap: start conversation or stop it */
+  /** Interrupt: stop current response and start listening for new input */
+  const interrupt = useCallback(() => {
+    // Stop any playing audio
+    audioQueueRef.current = [];
+    isPlayingRef.current = false;
+    stoppingRef.current = false;
+
+    if (soundRef.current) {
+      soundRef.current.stopAsync().catch(() => {});
+      soundRef.current.unloadAsync().catch(() => {});
+      soundRef.current = null;
+    }
+
+    // Cancel server-side processing
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'cancel' }));
+    }
+
+    // Clear transcript and start listening immediately
+    setTranscript(null);
+    setAudioLevel(0);
+    autoListenRef.current = true;
+    doStartListening();
+  }, [doStartListening]);
+
+  /** Single tap: start conversation, stop recording, or interrupt */
   const toggleSession = useCallback(() => {
     if (orbState === 'idle') {
       autoListenRef.current = true;
@@ -379,11 +692,13 @@ export function useVoiceSession({ token }: VoiceSessionOptions): VoiceSessionRet
         stoppingRef.current = true;
         doStopAndSend();
       }
+    } else if (orbState === 'speaking' || orbState === 'processing') {
+      // Tap during response → INTERRUPT and start listening
+      interrupt();
     } else {
-      // Tap during processing/speaking → cancel everything
       cancel();
     }
-  }, [orbState, doStartListening, doStopAndSend]);
+  }, [orbState, doStartListening, doStopAndSend, interrupt, cancel]);
 
   const cancel = useCallback(() => {
     autoListenRef.current = false;
@@ -403,7 +718,9 @@ export function useVoiceSession({ token }: VoiceSessionOptions): VoiceSessionRet
     setOrbState('idle');
     setAudioLevel(0);
     setTranscript(null);
-    wsRef.current?.send(JSON.stringify({ type: 'cancel' }));
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'cancel' }));
+    }
   }, []);
 
   return {
@@ -413,6 +730,7 @@ export function useVoiceSession({ token }: VoiceSessionOptions): VoiceSessionRet
     audioLevel,
     toggleSession,
     cancel,
+    interrupt,
     isConnected,
   };
 }

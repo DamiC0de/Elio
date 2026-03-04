@@ -16,6 +16,8 @@ import { MemoryRetriever } from './memoryRetriever.js';
 import { MemoryExtractor } from './memoryExtractor.js';
 import { sendNotificationToTelegram } from '../routes/telegram.js';
 import * as TelegramUser from './telegramUser.js';
+import { InboundMessageSchema, type InboundMessage } from '../schemas/ws-messages.js';
+import { checkRateLimit, getRateLimitConfig } from '../lib/rateLimiter.js';
 
 // Request states
 export enum RequestState {
@@ -730,8 +732,20 @@ export class Orchestrator {
 
     socket.on('message', (raw: Buffer) => {
       try {
-        const message = JSON.parse(raw.toString()) as ClientMessage;
-        this.handleClientMessage(socket, userId, message);
+        const parsed = JSON.parse(raw.toString());
+        const result = InboundMessageSchema.safeParse(parsed);
+        
+        if (!result.success) {
+          this.logger.warn({ msg: 'Invalid WebSocket message', errors: result.error.issues, raw: parsed });
+          this.sendEvent(socket, {
+            type: 'error',
+            message: 'Invalid message format',
+            requestId: 'unknown',
+          });
+          return;
+        }
+        
+        this.handleClientMessage(socket, userId, result.data as ClientMessage);
       } catch {
         this.sendEvent(socket, {
           type: 'error',
@@ -807,6 +821,20 @@ export class Orchestrator {
     userId: string,
     message: ClientMessage,
   ): void {
+    // Rate limiting check
+    const rateLimitConfig = getRateLimitConfig(message.type);
+    const rateLimit = checkRateLimit(userId, rateLimitConfig);
+    if (!rateLimit.allowed) {
+      this.logger.warn({ msg: 'Rate limited', userId, messageType: message.type, resetIn: rateLimit.resetIn });
+      socket.send(JSON.stringify({
+        type: 'error',
+        code: 'rate_limited',
+        message: `Trop de requêtes. Réessaie dans ${Math.ceil(rateLimit.resetIn / 1000)}s`,
+        requestId: 'rate_limit',
+      }));
+      return;
+    }
+
     switch (message.type) {
       case 'audio_chunk':
         this.handleAudioChunk(socket, userId, message.data);

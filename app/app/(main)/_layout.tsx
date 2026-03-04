@@ -23,6 +23,17 @@ export default function MainLayout() {
           headerShadowVisible: false,
         }}
       />
+      <Stack.Screen
+        name="history"
+        options={{
+          presentation: 'modal',
+          headerShown: true,
+          title: 'Historique',
+          headerStyle: { backgroundColor: theme.bg },
+          headerTintColor: theme.text,
+          headerShadowVisible: false,
+        }}
+      />
     </Stack>
   );
 }

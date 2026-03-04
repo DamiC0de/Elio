@@ -3,8 +3,9 @@
  * Standard RN Animated API (Expo Go compatible).
  */
 import React, { useEffect, useRef } from 'react';
-import { StyleSheet, Animated, Pressable, Easing } from 'react-native';
+import { StyleSheet, Animated, Pressable, Easing, View } from 'react-native';
 import { useTheme } from '../../constants/theme';
+import { WaveformRings } from './WaveformRings';
 
 export type OrbState = 'idle' | 'listening' | 'processing' | 'speaking' | 'error';
 
@@ -127,8 +128,17 @@ export function OrbView({ state, audioLevel = 0, onPress, onLongPress, onPressOu
   const rotateInterp = rotation.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
   const color = COLORS[state];
 
+  const showWaveform = state === 'listening' || state === 'speaking';
+
   return (
     <Pressable onPress={onPress} onLongPress={onLongPress} onPressOut={onPressOut} style={styles.container}>
+      {showWaveform && (
+        <WaveformRings
+          audioLevel={audioLevel}
+          color={color}
+          baseSize={BASE_SIZE}
+        />
+      )}
       <Animated.View
         style={[styles.glow, {
           backgroundColor: color,

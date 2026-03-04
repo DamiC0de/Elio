@@ -8,7 +8,7 @@ import { Linking, Platform } from 'react-native';
 import { Audio } from 'expo-av';
 import * as Haptics from 'expo-haptics';
 import { isCancelCommand } from '../lib/cancelDetection';
-import { containsInterruptKeyword, findInterruptKeyword } from '../lib/keywordDetector';
+// keywordDetector functions reserved for future US-040 keyword interrupt feature
 import { addToHistory } from '../lib/historyStore';
 import type { OrbState } from '../components/Orb/OrbView';
 import { getNotifications } from '../modules/notification-reader/src';
@@ -18,7 +18,7 @@ import { searchContacts, formatContactsForContext, callPhone } from '../lib/cont
 import { resolveContactPhone } from '../lib/contactResolver';
 import { openConversationWithFallback, type MessagingApp } from '../lib/conversationLinks';
 import { ERROR_MESSAGES, type ErrorMessage } from '../constants/errors';
-import { getOfflineResponse, OFFLINE_DEFAULT_MESSAGE } from '../lib/offlineResponses';
+import { OFFLINE_DEFAULT_MESSAGE } from '../lib/offlineResponses';
 import { useTimers } from '../lib/timerService';
 import { createReminderWithDelay } from '../lib/reminders';
 
@@ -62,8 +62,9 @@ const STOP_COMMANDS = ['stop', 'arrête', 'arrêter', 'termine', 'fin', 'merci d
 
 /**
  * US-005: Check if transcript contains a stop command
+ * Reserved for future use when stop command detection is implemented
  */
-function checkForStopCommand(transcript: string): boolean {
+function _checkForStopCommand(transcript: string): boolean {
   const lowered = transcript.toLowerCase().trim();
   return STOP_COMMANDS.some(cmd => 
     lowered === cmd || 
@@ -129,7 +130,7 @@ export function useVoiceSession({
   const [isConversationActive, setIsConversationActive] = useState(false); // US-005
 
   // US-023: Timer management
-  const { createTimer, cancelTimer, cancelLastTimer, cancelAllTimers, timers } = useTimers();
+  const { createTimer, cancelTimer, cancelLastTimer, cancelAllTimers } = useTimers();
   
   // Store network status in ref for use in callbacks
   const isNetworkConnectedRef = useRef(isNetworkConnected);
@@ -175,7 +176,8 @@ export function useVoiceSession({
   }, [clearConversationTimeout]);
 
   // US-005: Reset conversation timeout on activity
-  const resetConversationTimeout = useCallback(() => {
+  // Reserved for future use when conversation timeout is fully implemented
+  const _resetConversationTimeout = useCallback(() => {
     clearConversationTimeout();
     if (conversationModeRef.current) {
       conversationTimeoutRef.current = setTimeout(() => {
@@ -351,16 +353,13 @@ export function useVoiceSession({
 
       ws.onopen = () => {
         setIsConnected(true);
-        // Only set to idle if we're not actively playing audio
-        if (!isPlayingRef.current && audioQueueRef.current.length === 0) {
-          setOrbState('idle');
-        }
-        reconnectDelayRef.current = 1000; // Reset backoff on successful connect
         
-        // Restore auto-listen if we're in an active conversation (audio playing)
-        if (isPlayingRef.current || audioQueueRef.current.length > 0) {
-          autoListenRef.current = true;
-        }
+        // Clear any stale audio from previous session to prevent corruption
+        audioQueueRef.current = [];
+        isPlayingRef.current = false;
+        
+        setOrbState('idle');
+        reconnectDelayRef.current = 1000; // Reset backoff on successful connect
 
         // Keep-alive pings — every 10s to prevent iOS/tunnel timeout
         pingInterval = setInterval(() => {
@@ -1009,7 +1008,14 @@ export function useVoiceSession({
     }
   }, [stopKeywordListening]);
 
+  const MAX_AUDIO_QUEUE_SIZE = 20;
+
   const enqueueAudio = useCallback((base64: string) => {
+    // Prevent queue overflow (OOM protection)
+    if (audioQueueRef.current.length >= MAX_AUDIO_QUEUE_SIZE) {
+      console.warn('[Audio] Queue full, dropping old chunk');
+      audioQueueRef.current.shift(); // Remove oldest
+    }
     audioQueueRef.current.push(base64);
     setOrbState('speaking');
     // US-040: Start keyword listening when TTS starts (only on first chunk)
@@ -1100,7 +1106,6 @@ export function useVoiceSession({
 
       const { status } = await Audio.requestPermissionsAsync();
       if (status !== 'granted') {
-        isPreparingRecordingRef.current = false;
         setError(ERROR_MESSAGES.MICROPHONE_PERMISSION);
         setOrbState('error');
         return;
@@ -1128,7 +1133,6 @@ export function useVoiceSession({
       silenceStartRef.current = null;
       stoppingRef.current = false;
       hasAudibleAudioRef.current = false; // Reset audible audio tracking
-      isPreparingRecordingRef.current = false; // Done preparing
       setOrbState('listening');
 
       if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -1178,9 +1182,10 @@ export function useVoiceSession({
       });
     } catch (err) {
       console.error('Failed to start recording:', err);
-      isPreparingRecordingRef.current = false; // Reset on error
       setOrbState('error');
       setTimeout(() => setOrbState('idle'), 2000);
+    } finally {
+      isPreparingRecordingRef.current = false;
     }
   }, []);
 

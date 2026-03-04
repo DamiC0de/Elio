@@ -1,9 +1,12 @@
 /**
  * TranscriptOverlay — Displays speech transcription with role labels and typing animation
  * US-027: Improved transcript display with streaming support
+ * US-028: Long-press to copy, haptic feedback, accessibility
  */
 import React, { useEffect, useRef } from 'react';
-import { View, Text, ScrollView, StyleSheet, Animated } from 'react-native';
+import { View, Text, ScrollView, StyleSheet, Animated, Pressable, Alert } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
+import * as Haptics from 'expo-haptics';
 import { useTheme } from '../constants/theme';
 import { TypingText } from './TypingText';
 
@@ -51,19 +54,21 @@ export function TranscriptOverlay({
     }
   }, [text]);
 
+  /**
+   * US-028: Copy text to clipboard with haptic feedback
+   */
+  const handleLongPress = async () => {
+    if (text && role === 'assistant') {
+      await Clipboard.setStringAsync(text);
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert('Copié !', 'Le texte a été copié dans le presse-papier.');
+    }
+  };
+
   if (!text) return null;
 
-  return (
-    <Animated.View 
-      style={[
-        styles.container, 
-        { 
-          opacity,
-          backgroundColor: isUser ? theme.primarySoft : theme.tealSoft,
-          borderColor: isUser ? theme.primary : theme.teal,
-        }
-      ]}
-    >
+  const content = (
+    <>
       {/* Role label */}
       <View style={styles.labelContainer}>
         <Text style={[
@@ -95,6 +100,39 @@ export function TranscriptOverlay({
           </Text>
         )}
       </ScrollView>
+    </>
+  );
+
+  return (
+    <Animated.View 
+      style={[
+        styles.container, 
+        { 
+          opacity,
+          backgroundColor: isUser ? theme.primarySoft : theme.tealSoft,
+          borderColor: isUser ? theme.primary : theme.teal,
+        }
+      ]}
+      accessible
+      accessibilityRole="text"
+      accessibilityLabel={
+        isUser 
+          ? `Vous avez dit: ${text}` 
+          : `Réponse de Diva: ${text}`
+      }
+      accessibilityHint={!isUser ? 'Appui long pour copier' : undefined}
+    >
+      {!isUser ? (
+        <Pressable
+          onLongPress={handleLongPress}
+          delayLongPress={500}
+          style={styles.pressable}
+        >
+          {content}
+        </Pressable>
+      ) : (
+        content
+      )}
     </Animated.View>
   );
 }
@@ -109,6 +147,9 @@ const styles = StyleSheet.create({
     maxHeight: 160,
     borderWidth: 1,
     borderLeftWidth: 3,
+  },
+  pressable: {
+    flex: 1,
   },
   labelContainer: {
     marginBottom: 6,

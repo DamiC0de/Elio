@@ -12,6 +12,27 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { FastifyBaseLogger } from 'fastify';
 
+// Retry configuration for overloaded errors
+const RETRY_CONFIG = {
+  maxRetries: 3,
+  baseDelayMs: 1000,
+  maxDelayMs: 10000,
+  retryableCodes: [529, 503, 502], // Overloaded, Service Unavailable
+};
+
+/** Sleep helper */
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+/** Check if error is retryable */
+function isRetryableError(error: unknown): boolean {
+  if (error instanceof Anthropic.APIError) {
+    return RETRY_CONFIG.retryableCodes.includes(error.status);
+  }
+  // Check for overloaded_error in message
+  const msg = String(error);
+  return msg.includes('overloaded') || msg.includes('529') || msg.includes('503');
+}
+
 // Types
 interface Message {
   role: 'user' | 'assistant';
@@ -228,20 +249,32 @@ Tu peux :
     // Build system prompt
     const systemBlocks = this.buildSystemPrompt(userSettings, memories);
 
-    try {
-      const response = await this.client!.messages.create({
-        model: this.config.model,
-        max_tokens: this.config.maxTokens,
-        temperature: this.config.temperature,
-        system: systemBlocks,
-        messages,
-        ...(tools && tools.length > 0 ? { tools } : {}),
-      });
+    // Retry loop with exponential backoff for overloaded errors
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt <= RETRY_CONFIG.maxRetries; attempt++) {
+      try {
+        if (attempt > 0) {
+          const delay = Math.min(
+            RETRY_CONFIG.baseDelayMs * Math.pow(2, attempt - 1),
+            RETRY_CONFIG.maxDelayMs
+          );
+          this.logger.warn({ msg: 'LLM retry', attempt, delay, maxRetries: RETRY_CONFIG.maxRetries });
+          await sleep(delay);
+        }
 
-      // Extract text content
-      const textBlocks = response.content.filter(
-        (block): block is Anthropic.TextBlock => block.type === 'text',
-      );
+        const response = await this.client!.messages.create({
+          model: this.config.model,
+          max_tokens: this.config.maxTokens,
+          temperature: this.config.temperature,
+          system: systemBlocks,
+          messages,
+          ...(tools && tools.length > 0 ? { tools } : {}),
+        });
+
+        // Extract text content
+        const textBlocks = response.content.filter(
+          (block): block is Anthropic.TextBlock => block.type === 'text',
+        );
       const text = textBlocks.map((b) => b.text).join('');
 
       // Extract tool use
@@ -279,11 +312,18 @@ Tu peux :
         hasToolUse: toolUseBlocks.length > 0,
       });
 
-      return result;
-    } catch (error) {
-      this.logger.error({ msg: 'LLM error', error });
-      throw error;
+        return result;
+      } catch (error) {
+        lastError = error;
+        if (!isRetryableError(error) || attempt === RETRY_CONFIG.maxRetries) {
+          this.logger.error({ msg: 'LLM error', error, attempt, willRetry: false });
+          throw error;
+        }
+        this.logger.warn({ msg: 'LLM retryable error', error: String(error), attempt, willRetry: true });
+      }
     }
+    // Should not reach here, but just in case
+    throw lastError;
   }
 
   /**

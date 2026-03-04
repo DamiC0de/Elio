@@ -13,6 +13,8 @@ import { getNotifications } from '../modules/notification-reader/src';
 import { getEvents, formatEventsForContext, createEvent } from '../lib/calendar';
 import { getEmails, sendEmail, formatEmailsForContext, isSignedIn as isGmailSignedIn } from '../lib/gmail';
 import { searchContacts, formatContactsForContext, callPhone } from '../lib/contacts';
+import { resolveContactPhone } from '../lib/contactResolver';
+import { openConversationWithFallback, type MessagingApp } from '../lib/conversationLinks';
 import { ERROR_MESSAGES, type ErrorMessage } from '../constants/errors';
 import { getOfflineResponse, OFFLINE_DEFAULT_MESSAGE } from '../lib/offlineResponses';
 import { useTimers } from '../lib/timerService';
@@ -185,6 +187,7 @@ export function useVoiceSession({
   const audioQueueRef = useRef<string[]>([]); // queue of base64 audio chunks
   const isPlayingRef = useRef(false);
   const responseCompleteRef = useRef(true); // Track if server response is complete (wait for COMPLETED)
+  const transcriptClearTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null); // US-028: Persist transcript 2s after TTS
   const hasAudibleAudioRef = useRef(false); // Track if we heard any audible audio during recording
 
   // --- WebSocket with auto-reconnect ---
@@ -306,11 +309,14 @@ export function useVoiceSession({
             case 'assistant_message':
             case 'text_response': {
               const responseText = msg.text || msg.content || '';
+              // US-028: Clear any pending transcript timeout
+              if (transcriptClearTimeoutRef.current) {
+                clearTimeout(transcriptClearTimeoutRef.current);
+                transcriptClearTimeoutRef.current = null;
+              }
               setTranscript(responseText);
               setTranscriptRole('assistant');
-              const words = responseText.split(/\s+/).length;
-              const displayMs = Math.min(15000, Math.max(5000, words * 80));
-              setTimeout(() => setTranscript(null), displayMs);
+              // US-028: Transcript will be cleared 2s after TTS ends (see playNextInQueue)
               break;
             }
 
@@ -602,6 +608,53 @@ export function useVoiceSession({
               })();
               break;
 
+            case 'request_open_conversation':
+              // US-021: Server asks to open a conversation with a contact
+              (async () => {
+                try {
+                  const contactName = msg.contact_name || msg.contactName;
+                  const app = (msg.app || 'whatsapp') as MessagingApp;
+                  
+                  // Resolve contact name to phone number
+                  const resolved = await resolveContactPhone(contactName);
+                  
+                  if (!resolved) {
+                    if (ws.readyState === WebSocket.OPEN) {
+                      ws.send(JSON.stringify({
+                        type: 'open_conversation_response',
+                        success: false,
+                        error: `Je n'ai pas trouvé ${contactName} dans tes contacts.`,
+                      }));
+                    }
+                    return;
+                  }
+                  
+                  // Open the conversation
+                  const result = await openConversationWithFallback(app, resolved.phoneNumber);
+                  
+                  if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                      type: 'open_conversation_response',
+                      success: result.success,
+                      message: result.success
+                        ? `Conversation avec ${resolved.name} ouverte sur ${app}.`
+                        : undefined,
+                      error: result.error,
+                      fallbackUsed: result.fallbackUsed,
+                    }));
+                  }
+                } catch (err) {
+                  if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                      type: 'open_conversation_response',
+                      success: false,
+                      error: String(err),
+                    }));
+                  }
+                }
+              })();
+              break;
+
             case 'error':
               setOrbState('error');
               // US-006: Use proper error message based on error type
@@ -687,6 +740,16 @@ export function useVoiceSession({
           // More audio coming from server, stay in speaking state
           return;
         }
+        
+        // US-028: TTS finished — persist transcript for 2s then clear
+        if (transcriptClearTimeoutRef.current) {
+          clearTimeout(transcriptClearTimeoutRef.current);
+        }
+        transcriptClearTimeoutRef.current = setTimeout(() => {
+          setTranscript(null);
+          transcriptClearTimeoutRef.current = null;
+        }, 2000);
+        
         // All done playing — wait for iOS to fully release audio session before recording
         if (autoListenRef.current) {
           // Critical: Reset audio mode and wait before starting new recording
@@ -946,6 +1009,12 @@ export function useVoiceSession({
     isPlayingRef.current = false;
     stoppingRef.current = false;
 
+    // US-028: Clear any pending transcript timeout
+    if (transcriptClearTimeoutRef.current) {
+      clearTimeout(transcriptClearTimeoutRef.current);
+      transcriptClearTimeoutRef.current = null;
+    }
+
     if (soundRef.current) {
       soundRef.current.stopAsync().catch(() => {});
       soundRef.current.unloadAsync().catch(() => {});
@@ -972,6 +1041,12 @@ export function useVoiceSession({
     stoppingRef.current = false;
     audioQueueRef.current = [];
     isPlayingRef.current = false;
+
+    // US-028: Clear any pending transcript timeout
+    if (transcriptClearTimeoutRef.current) {
+      clearTimeout(transcriptClearTimeoutRef.current);
+      transcriptClearTimeoutRef.current = null;
+    }
 
     // Stop recording if active
     if (recordingRef.current) {

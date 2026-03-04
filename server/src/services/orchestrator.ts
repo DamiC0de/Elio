@@ -432,6 +432,25 @@ Si tu ne connais pas le scheme exact, utilise une URL https:// qui ouvrira Safar
       },
     },
   },
+  {
+    name: 'open_conversation',
+    description: "Ouvrir une conversation avec un contact sur une app de messagerie (WhatsApp, iMessage, Messenger). Utilise quand l'utilisateur dit 'ouvre WhatsApp avec Julie', 'écris à Maman sur iMessage', 'conversation avec Pierre'. Le client résoudra le nom du contact vers son numéro de téléphone.",
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        contact_name: {
+          type: 'string',
+          description: "Nom du contact à ouvrir (sera recherché dans les contacts du téléphone)",
+        },
+        app: {
+          type: 'string',
+          enum: ['whatsapp', 'imessage', 'messenger'],
+          description: "Application de messagerie à utiliser. Si non spécifié, WhatsApp par défaut.",
+        },
+      },
+      required: ['contact_name'],
+    },
+  },
 ];
 
 // open_app: Claude builds the URL scheme directly, no mapping needed
@@ -1357,6 +1376,21 @@ export class Orchestrator {
             results.push({ name: tool.name, result: cancelResult });
             break;
           }
+          case 'open_conversation': {
+            // US-021: Open conversation with contact on messaging app
+            if (!socket) {
+              results.push({ name: tool.name, result: 'WebSocket non disponible.' });
+              break;
+            }
+            const convParams = input as unknown as { contact_name: string; app?: string };
+            const convResult = await this.requestOpenConversationFromClient(
+              socket,
+              convParams.contact_name,
+              (convParams.app as 'whatsapp' | 'imessage' | 'messenger') || 'whatsapp'
+            );
+            results.push({ name: tool.name, result: convResult });
+            break;
+          }
           default:
             results.push({ name: tool.name, result: `Outil ${tool.name} non disponible` });
         }
@@ -2101,6 +2135,46 @@ export class Orchestrator {
             }
 
             resolve(msg.message || "Timer annulé.");
+          }
+        } catch { /* ignore */ }
+      };
+
+      socket.on('message', handler);
+    });
+  }
+
+  /**
+   * US-021: Request to open a conversation with a contact on a messaging app
+   */
+  private async requestOpenConversationFromClient(
+    socket: import('ws').WebSocket,
+    contactName: string,
+    app: 'whatsapp' | 'imessage' | 'messenger',
+  ): Promise<string> {
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        resolve("Le téléphone n'a pas répondu.");
+      }, 8000);
+
+      this.sendEvent(socket, {
+        type: 'request_open_conversation',
+        contact_name: contactName,
+        app,
+      } as any);
+
+      const handler = (raw: Buffer) => {
+        try {
+          const msg = JSON.parse(raw.toString());
+          if (msg.type === 'open_conversation_response') {
+            clearTimeout(timeout);
+            socket.removeListener('message', handler);
+
+            if (msg.error) {
+              resolve(msg.error);
+              return;
+            }
+
+            resolve(msg.message || `Conversation avec ${contactName} ouverte sur ${app}.`);
           }
         } catch { /* ignore */ }
       };

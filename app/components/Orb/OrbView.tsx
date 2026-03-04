@@ -294,11 +294,11 @@ export function OrbView({ state, audioLevel = 0, onPress, onLongPress, onPressOu
         />
       )}
       
-      {/* Outer glow */}
+      {/* Outer glow - static opacity to avoid mixing native/JS drivers */}
       <Animated.View
         style={[styles.glow, {
           backgroundColor: color,
-          opacity: Animated.multiply(opacity, new Animated.Value(0.2)),
+          opacity: 0.2,
           transform: [{ scale: glowScale }],
         }]}
       />

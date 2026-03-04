@@ -1000,9 +1000,37 @@ export function useVoiceSession({
     }
   }, [playNextInQueue, startKeywordListening]);
 
-  const playAudio = async (_data: unknown) => {
-    setOrbState('speaking');
-    setTimeout(() => setOrbState('idle'), 2000);
+  const playAudio = async (data: unknown) => {
+    try {
+      // Convert Blob/ArrayBuffer to base64
+      let base64: string;
+      
+      if (data instanceof Blob) {
+        // Web/Expo: Blob to base64
+        const arrayBuffer = await data.arrayBuffer();
+        const bytes = new Uint8Array(arrayBuffer);
+        let binary = '';
+        bytes.forEach((b) => { binary += String.fromCharCode(b); });
+        base64 = btoa(binary);
+      } else if (data instanceof ArrayBuffer) {
+        // ArrayBuffer to base64
+        const bytes = new Uint8Array(data);
+        let binary = '';
+        bytes.forEach((b) => { binary += String.fromCharCode(b); });
+        base64 = btoa(binary);
+      } else if (typeof data === 'string') {
+        // Already base64
+        base64 = data;
+      } else {
+        console.warn('[Audio] Unknown data type received:', typeof data);
+        return;
+      }
+      
+      // Enqueue for proper playback with state management
+      enqueueAudio(base64);
+    } catch (error) {
+      console.error('[Audio] Error processing audio data:', error);
+    }
   };
 
   // Track if we're currently preparing a recording (prevent concurrent calls)

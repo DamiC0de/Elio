@@ -123,26 +123,46 @@ export function OrbView({ state, audioLevel = 0, onPress, onLongPress, onPressOu
 
     switch (state) {
       case 'idle': {
-        // More visible floating/breathing
+        // Set initial values to avoid jumps
+        scale.setValue(1);
+        translateY.setValue(0);
+        glowOpacity.setValue(0.4);
+        glowScale.setValue(1);
+        
+        // Smooth breathing cycle: neutral → up → neutral → down → neutral
         const breathe = Animated.loop(
           Animated.sequence([
+            // Float up
             Animated.parallel([
-              Animated.timing(scale, { toValue: 1.08, duration: 1800, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-              Animated.timing(translateY, { toValue: -12, duration: 1800, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-              Animated.timing(glowOpacity, { toValue: 0.6, duration: 1800, useNativeDriver: true }),
+              Animated.timing(scale, { toValue: 1.06, duration: 1500, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+              Animated.timing(translateY, { toValue: -10, duration: 1500, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+              Animated.timing(glowOpacity, { toValue: 0.55, duration: 1500, useNativeDriver: true }),
             ]),
+            // Return to center
             Animated.parallel([
-              Animated.timing(scale, { toValue: 0.94, duration: 1800, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-              Animated.timing(translateY, { toValue: 12, duration: 1800, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-              Animated.timing(glowOpacity, { toValue: 0.3, duration: 1800, useNativeDriver: true }),
+              Animated.timing(scale, { toValue: 1, duration: 1500, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+              Animated.timing(translateY, { toValue: 0, duration: 1500, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+              Animated.timing(glowOpacity, { toValue: 0.4, duration: 1500, useNativeDriver: true }),
+            ]),
+            // Float down
+            Animated.parallel([
+              Animated.timing(scale, { toValue: 0.96, duration: 1500, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+              Animated.timing(translateY, { toValue: 8, duration: 1500, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+              Animated.timing(glowOpacity, { toValue: 0.3, duration: 1500, useNativeDriver: true }),
+            ]),
+            // Return to center (ready to loop)
+            Animated.parallel([
+              Animated.timing(scale, { toValue: 1, duration: 1500, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+              Animated.timing(translateY, { toValue: 0, duration: 1500, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+              Animated.timing(glowOpacity, { toValue: 0.4, duration: 1500, useNativeDriver: true }),
             ]),
           ])
         );
         
         const glowPulse = Animated.loop(
           Animated.sequence([
-            Animated.timing(glowScale, { toValue: 1.3, duration: 1800, useNativeDriver: true }),
-            Animated.timing(glowScale, { toValue: 1, duration: 1800, useNativeDriver: true }),
+            Animated.timing(glowScale, { toValue: 1.25, duration: 3000, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+            Animated.timing(glowScale, { toValue: 1, duration: 3000, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
           ])
         );
         

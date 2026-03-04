@@ -49,6 +49,10 @@ interface CancelMessage {
   type: 'cancel';
 }
 
+interface InterruptMessage {
+  type: 'interrupt';
+}
+
 interface StartListeningMessage {
   type: 'start_listening';
 }
@@ -67,7 +71,7 @@ interface PingMessage {
   type: 'ping';
 }
 
-type ClientMessage = AudioChunkMessage | AudioEndMessage | TextMessage | CancelMessage | StartListeningMessage | StopListeningMessage | AudioMessage | PingMessage;
+type ClientMessage = AudioChunkMessage | AudioEndMessage | TextMessage | CancelMessage | InterruptMessage | StartListeningMessage | StopListeningMessage | AudioMessage | PingMessage;
 
 // WebSocket message types (server → client)
 interface StateChangeEvent {
@@ -810,6 +814,10 @@ export class Orchestrator {
       case 'cancel':
         this.cancelUserRequest(userId);
         break;
+      case 'interrupt':
+        // US-039: Interrupt TTS but preserve conversation context
+        this.interruptUserRequest(socket, userId);
+        break;
       case 'ping':
         this.logger.debug({ msg: 'Ping received, sending pong' });
         this.sendEvent(socket, { type: 'pong' } as any);
@@ -1051,6 +1059,11 @@ export class Orchestrator {
       // Clean LLM output for TTS
       const fullText = this.cleanForTTS(llmResult.text);
 
+      // US-039: Add assistant response to history BEFORE TTS starts
+      // This way, if user interrupts during TTS, we can mark the response as interrupted
+      sessionHistory.push({ role: 'assistant', content: fullText });
+      if (sessionHistory.length > 20) sessionHistory.splice(0, sessionHistory.length - 20);
+
       // Streaming TTS: split into sentences and synthesize in parallel
       if (fullText.trim()) {
         this.setState(socket, request, RequestState.SYNTHESIZING);
@@ -1105,8 +1118,7 @@ export class Orchestrator {
         this.setState(socket, request, RequestState.STREAMING_AUDIO);
       }
 
-      sessionHistory.push({ role: 'assistant', content: fullText });
-      if (sessionHistory.length > 20) sessionHistory.splice(0, sessionHistory.length - 20);
+      // Note: sessionHistory already updated before TTS (US-039 - for interrupt support)
 
       this.sendEvent(socket, { type: 'text_response', text: fullText, requestId: request.id, isPartial: false });
 
@@ -1563,6 +1575,48 @@ export class Orchestrator {
       request.cancelled = true;
       this.cleanupRequest(requestId);
     }
+  }
+
+  /**
+   * US-039: Interrupt current TTS but preserve conversation context.
+   * Unlike cancel, this keeps the conversation history intact.
+   */
+  private interruptUserRequest(socket: WebSocket, userId: string): void {
+    const requestId = this.userActiveRequest.get(userId);
+    const request = requestId ? this.activeRequests.get(requestId) : null;
+
+    this.logger.info({ msg: 'Interrupt request', userId, requestId, state: request?.state });
+
+    // Get session history for this socket
+    const sessionHistory = this.sessionHistory.get(socket);
+    
+    // If there's an active request being processed, mark partial response in history
+    if (sessionHistory && sessionHistory.length > 0) {
+      const lastMessage = sessionHistory[sessionHistory.length - 1];
+      
+      // If the last message is from assistant and we're currently in speaking/synthesizing state,
+      // mark it as interrupted
+      if (lastMessage.role === 'assistant' && request && 
+          (request.state === RequestState.SYNTHESIZING || 
+           request.state === RequestState.STREAMING_AUDIO ||
+           request.state === RequestState.THINKING)) {
+        // Append [interrompu] marker to preserve context
+        lastMessage.content = lastMessage.content + ' [interrompu]';
+        this.logger.info({ msg: 'Marked response as interrupted', userId });
+      }
+    }
+
+    // Cancel the current request processing (stops TTS pipeline)
+    if (requestId) {
+      this.cancelRequest(requestId);
+    }
+
+    // Send ready state to client - conversation context is preserved
+    this.sendEvent(socket, {
+      type: 'state_change',
+      state: RequestState.COMPLETED,
+      requestId: requestId || 'interrupt',
+    });
   }
 
   private cleanupRequest(requestId: string): void {

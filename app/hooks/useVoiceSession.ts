@@ -1047,18 +1047,18 @@ export function useVoiceSession({
 
   // --- Public API ---
 
-  /** Interrupt: stop current response and start listening for new input */
+  /** 
+   * US-039: Interrupt - stop current TTS but preserve conversation context.
+   * Unlike cancel(), this keeps the conversation flowing naturally.
+   */
   const interrupt = useCallback(() => {
-    // Stop any playing audio
+    // 1. Haptic feedback for immediate responsiveness
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+    // 2. Stop audio playback immediately
     audioQueueRef.current = [];
     isPlayingRef.current = false;
     stoppingRef.current = false;
-
-    // US-028: Clear any pending transcript timeout
-    if (transcriptClearTimeoutRef.current) {
-      clearTimeout(transcriptClearTimeoutRef.current);
-      transcriptClearTimeoutRef.current = null;
-    }
 
     if (soundRef.current) {
       soundRef.current.stopAsync().catch(() => {});
@@ -1066,14 +1066,23 @@ export function useVoiceSession({
       soundRef.current = null;
     }
 
-    // Cancel server-side processing
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'cancel' }));
+    // US-028: Clear any pending transcript timeout
+    if (transcriptClearTimeoutRef.current) {
+      clearTimeout(transcriptClearTimeoutRef.current);
+      transcriptClearTimeoutRef.current = null;
     }
 
-    // Clear transcript and start listening immediately
+    // 3. Notify server of interruption (NOT cancel - preserves context)
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'interrupt' }));
+    }
+
+    // 4. Clear transcript and transition to listening
     setTranscript(null);
     setAudioLevel(0);
+    setOrbState('listening');
+
+    // 5. Start recording for new input
     autoListenRef.current = true;
     doStartListening();
   }, [doStartListening]);

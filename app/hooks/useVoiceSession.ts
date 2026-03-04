@@ -11,12 +11,15 @@ import { getNotifications } from '../modules/notification-reader/src';
 import { getEvents, formatEventsForContext, createEvent } from '../lib/calendar';
 import { getEmails, sendEmail, formatEmailsForContext, isSignedIn as isGmailSignedIn } from '../lib/gmail';
 import { searchContacts, formatContactsForContext, callPhone } from '../lib/contacts';
+import { ERROR_MESSAGES, type ErrorMessage } from '../constants/errors';
+import { getOfflineResponse, OFFLINE_DEFAULT_MESSAGE } from '../lib/offlineResponses';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://72.60.155.227:3001';
 const WS_URL = API_URL.replace('http', 'ws');
 
 interface VoiceSessionOptions {
   token: string | null;
+  isNetworkConnected?: boolean;
 }
 
 interface VoiceSessionReturn {
@@ -26,13 +29,20 @@ interface VoiceSessionReturn {
   audioLevel: number;
   toggleSession: () => void;
   cancel: () => void;
+  interrupt: () => void;
   isConnected: boolean;
+  error: ErrorMessage | null;
+  clearError: () => void;
 }
 
 // Silence detection config
-const SILENCE_THRESHOLD = -40; // dB — below this = silence
-const SILENCE_DURATION_MS = 1500; // 1.5s of silence → auto-send
-const MIN_RECORDING_MS = 800; // don't auto-stop before 800ms
+const SILENCE_THRESHOLD = -45; // dB — below this = silence (lowered for less sensitive detection)
+const SILENCE_DURATION_MS = 2500; // 2.5s of silence → auto-send (increased for natural pauses)
+const MIN_RECORDING_MS = 1000; // don't auto-stop before 1s
+const LONG_RECORDING_SILENCE_MS = 3500; // 3.5s silence if recording > 10s (user is thinking)
+
+// Audio level detection — US-006
+const MIN_AUDIBLE_LEVEL = -50; // dB — below this = inaudible
 
 /**
  * EL-032 — Handle server request for captured notifications.
@@ -71,12 +81,19 @@ async function handleNotificationRequest(
   }
 }
 
-export function useVoiceSession({ token }: VoiceSessionOptions): VoiceSessionReturn {
+export function useVoiceSession({ token, isNetworkConnected = true }: VoiceSessionOptions): VoiceSessionReturn {
   const [orbState, setOrbState] = useState<OrbState>('idle');
   const [transcript, setTranscript] = useState<string | null>(null);
   const [transcriptRole, setTranscriptRole] = useState<'user' | 'assistant'>('user');
   const [audioLevel, setAudioLevel] = useState(0);
   const [isConnected, setIsConnected] = useState(false);
+  const [error, setError] = useState<ErrorMessage | null>(null);
+  
+  // Store network status in ref for use in callbacks
+  const isNetworkConnectedRef = useRef(isNetworkConnected);
+  useEffect(() => {
+    isNetworkConnectedRef.current = isNetworkConnected;
+  }, [isNetworkConnected]);
 
   const wsRef = useRef<WebSocket | null>(null);
   const recordingRef = useRef<Audio.Recording | null>(null);
@@ -87,6 +104,8 @@ export function useVoiceSession({ token }: VoiceSessionOptions): VoiceSessionRet
   const stoppingRef = useRef(false);
   const audioQueueRef = useRef<string[]>([]); // queue of base64 audio chunks
   const isPlayingRef = useRef(false);
+  const responseCompleteRef = useRef(true); // Track if server response is complete (wait for COMPLETED)
+  const hasAudibleAudioRef = useRef(false); // Track if we heard any audible audio during recording
 
   // --- WebSocket with auto-reconnect ---
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -152,8 +171,19 @@ export function useVoiceSession({ token }: VoiceSessionOptions): VoiceSessionRet
             case 'state_change':
               if (msg.state === 'processing' || msg.state === 'THINKING') {
                 setOrbState('processing');
-              } else if (msg.state === 'speaking' || msg.state === 'SYNTHESIZING') {
+                responseCompleteRef.current = false; // Response started, not complete yet
+              } else if (msg.state === 'speaking' || msg.state === 'SYNTHESIZING' || msg.state === 'STREAMING_AUDIO') {
                 setOrbState('speaking');
+              } else if (msg.state === 'COMPLETED' || msg.state === 'completed') {
+                responseCompleteRef.current = true; // Response complete
+                // If no audio is playing or queued, switch to idle or auto-listen
+                if (!isPlayingRef.current && audioQueueRef.current.length === 0) {
+                  if (autoListenRef.current) {
+                    setTimeout(() => doStartListening(), 300);
+                  } else {
+                    setOrbState('idle');
+                  }
+                }
               }
               break;
 
@@ -367,10 +397,21 @@ export function useVoiceSession({ token }: VoiceSessionOptions): VoiceSessionRet
 
             case 'error':
               setOrbState('error');
-              setTranscript(msg.message);
-              setTranscriptRole('assistant');
+              // US-006: Use proper error message based on error type
+              if (msg.code === 'transcription_failed') {
+                setError(ERROR_MESSAGES.TRANSCRIPTION_FAILED);
+              } else if (msg.code === 'server_unavailable') {
+                setError(ERROR_MESSAGES.SERVER_UNAVAILABLE);
+              } else {
+                // Generic error with server message
+                setError({
+                  title: 'Erreur',
+                  message: msg.message || 'Une erreur est survenue.',
+                  action: 'Réessayer',
+                });
+              }
               setTimeout(() => {
-                setTranscript(null);
+                setError(null);
                 if (autoListenRef.current) {
                   doStartListening();
                 } else {
@@ -434,6 +475,11 @@ export function useVoiceSession({ token }: VoiceSessionOptions): VoiceSessionRet
   const playNextInQueue = useCallback(async () => {
     if (isPlayingRef.current || audioQueueRef.current.length === 0) {
       if (audioQueueRef.current.length === 0 && !isPlayingRef.current) {
+        // Queue empty - check if response is complete before switching state
+        if (!responseCompleteRef.current) {
+          // More audio coming from server, stay in speaking state
+          return;
+        }
         // All done playing — wait for iOS to fully release audio session before recording
         if (autoListenRef.current) {
           // Critical: Reset audio mode and wait before starting new recording
@@ -539,6 +585,8 @@ export function useVoiceSession({ token }: VoiceSessionOptions): VoiceSessionRet
       const { status } = await Audio.requestPermissionsAsync();
       if (status !== 'granted') {
         isPreparingRecordingRef.current = false;
+        setError(ERROR_MESSAGES.MICROPHONE_PERMISSION);
+        setOrbState('error');
         return;
       }
 
@@ -563,6 +611,7 @@ export function useVoiceSession({ token }: VoiceSessionOptions): VoiceSessionRet
       recordingStartRef.current = Date.now();
       silenceStartRef.current = null;
       stoppingRef.current = false;
+      hasAudibleAudioRef.current = false; // Reset audible audio tracking
       isPreparingRecordingRef.current = false; // Done preparing
       setOrbState('listening');
 
@@ -579,6 +628,11 @@ export function useVoiceSession({ token }: VoiceSessionOptions): VoiceSessionRet
         const normalized = Math.max(0, Math.min(1, (db + 50) / 50));
         setAudioLevel(normalized);
 
+        // Track if we've heard any audible audio (US-006)
+        if (db > MIN_AUDIBLE_LEVEL) {
+          hasAudibleAudioRef.current = true;
+        }
+
         const now = Date.now();
         const elapsed = now - recordingStartRef.current;
 
@@ -588,11 +642,16 @@ export function useVoiceSession({ token }: VoiceSessionOptions): VoiceSessionRet
             // Silent
             if (!silenceStartRef.current) {
               silenceStartRef.current = now;
-            } else if (now - silenceStartRef.current >= SILENCE_DURATION_MS) {
-              // Silence detected → auto-stop
-              if (!stoppingRef.current) {
-                stoppingRef.current = true;
-                doStopAndSend();
+            } else {
+              // Use longer silence threshold for longer recordings (user is thinking)
+              const silenceRequired = elapsed > 10000 ? LONG_RECORDING_SILENCE_MS : SILENCE_DURATION_MS;
+              
+              if (now - silenceStartRef.current >= silenceRequired) {
+                // Silence detected → auto-stop
+                if (!stoppingRef.current) {
+                  stoppingRef.current = true;
+                  doStopAndSend();
+                }
               }
             }
           } else {
@@ -614,12 +673,29 @@ export function useVoiceSession({ token }: VoiceSessionOptions): VoiceSessionRet
     if (!recording) return;
 
     try {
-      setOrbState('processing');
       setAudioLevel(0);
 
       await recording.stopAndUnloadAsync();
       const uri = recording.getURI();
       recordingRef.current = null;
+
+      // US-006: Check if we heard any audible audio
+      if (!hasAudibleAudioRef.current) {
+        setError(ERROR_MESSAGES.AUDIO_TOO_QUIET);
+        setOrbState('error');
+        // Auto-dismiss after 3s and restart listening
+        setTimeout(() => {
+          setError(null);
+          if (autoListenRef.current) {
+            doStartListening();
+          } else {
+            setOrbState('idle');
+          }
+        }, 3000);
+        return;
+      }
+
+      setOrbState('processing');
 
       if (uri && wsRef.current?.readyState === WebSocket.OPEN) {
         const response = await fetch(uri);
@@ -681,25 +757,6 @@ export function useVoiceSession({ token }: VoiceSessionOptions): VoiceSessionRet
     doStartListening();
   }, [doStartListening]);
 
-  /** Single tap: start conversation, stop recording, or interrupt */
-  const toggleSession = useCallback(() => {
-    if (orbState === 'idle') {
-      autoListenRef.current = true;
-      doStartListening();
-    } else if (orbState === 'listening') {
-      // Manual stop → send immediately
-      if (!stoppingRef.current) {
-        stoppingRef.current = true;
-        doStopAndSend();
-      }
-    } else if (orbState === 'speaking' || orbState === 'processing') {
-      // Tap during response → INTERRUPT and start listening
-      interrupt();
-    } else {
-      cancel();
-    }
-  }, [orbState, doStartListening, doStopAndSend, interrupt, cancel]);
-
   const cancel = useCallback(() => {
     autoListenRef.current = false;
     stoppingRef.current = false;
@@ -723,6 +780,48 @@ export function useVoiceSession({ token }: VoiceSessionOptions): VoiceSessionRet
     }
   }, []);
 
+  /** Handle offline query - show message and optionally provide local response */
+  const handleOfflineQuery = useCallback(() => {
+    setOrbState('error');
+    setTranscript(OFFLINE_DEFAULT_MESSAGE);
+    setTranscriptRole('assistant');
+    
+    // Auto-clear after 5 seconds
+    setTimeout(() => {
+      setTranscript(null);
+      setOrbState('idle');
+    }, 5000);
+  }, []);
+
+  /** Single tap: start conversation, stop recording, or interrupt */
+  const toggleSession = useCallback(() => {
+    // US-038: Check for offline mode
+    if (!isNetworkConnectedRef.current) {
+      handleOfflineQuery();
+      return;
+    }
+    
+    if (orbState === 'idle') {
+      autoListenRef.current = true;
+      doStartListening();
+    } else if (orbState === 'listening') {
+      // Manual stop → send immediately
+      if (!stoppingRef.current) {
+        stoppingRef.current = true;
+        doStopAndSend();
+      }
+    } else if (orbState === 'speaking' || orbState === 'processing') {
+      // Tap during response → INTERRUPT and start listening
+      interrupt();
+    } else {
+      cancel();
+    }
+  }, [orbState, doStartListening, doStopAndSend, interrupt, cancel, handleOfflineQuery]);
+
+  const clearError = useCallback(() => {
+    setError(null);
+  }, []);
+
   return {
     orbState,
     transcript,
@@ -732,5 +831,7 @@ export function useVoiceSession({ token }: VoiceSessionOptions): VoiceSessionRet
     cancel,
     interrupt,
     isConnected,
+    error,
+    clearError,
   };
 }

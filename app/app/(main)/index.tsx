@@ -8,7 +8,9 @@ import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { OrbView } from '../../components/Orb/OrbView';
 import { TranscriptOverlay } from '../../components/TranscriptOverlay';
+import { ErrorOverlay } from '../../components/ErrorOverlay';
 import { useVoiceSession } from '../../hooks/useVoiceSession';
+import { useNetworkStatus } from '../../hooks/useNetworkStatus';
 import { useTheme } from '../../constants/theme';
 import { supabase } from '../../lib/supabase';
 
@@ -25,6 +27,7 @@ export default function OrbScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const [token, setToken] = useState<string | null>(null);
+  const { isConnected: isNetworkConnected } = useNetworkStatus();
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -39,8 +42,10 @@ export default function OrbScreen() {
     audioLevel,
     toggleSession,
     cancel,
-    isConnected,
-  } = useVoiceSession({ token });
+    isConnected: isWsConnected,
+    error,
+    clearError,
+  } = useVoiceSession({ token, isNetworkConnected });
 
   return (
     <View style={[styles.container, { backgroundColor: theme.bg, paddingTop: insets.top }]}>
@@ -54,8 +59,15 @@ export default function OrbScreen() {
         </Pressable>
       </View>
 
-      {/* Connection status */}
-      {!isConnected && token && (
+      {/* Offline badge - US-038 */}
+      {!isNetworkConnected && (
+        <View style={styles.offlineBadge}>
+          <Text style={styles.offlineBadgeText}>📡 Hors ligne</Text>
+        </View>
+      )}
+
+      {/* Connection status (WebSocket) */}
+      {!isWsConnected && isNetworkConnected && token && (
         <View style={[styles.statusBar, { backgroundColor: theme.primarySoft }]}>
           <Text style={[styles.statusText, { color: theme.primary }]}>Connexion...</Text>
         </View>
@@ -79,6 +91,13 @@ export default function OrbScreen() {
       <View style={styles.transcriptArea}>
         <TranscriptOverlay text={transcript} role={transcriptRole} />
       </View>
+
+      {/* Error overlay — US-006 */}
+      <ErrorOverlay
+        error={error}
+        onRetry={toggleSession}
+        onDismiss={clearError}
+      />
 
       <View style={{ height: insets.bottom + 20 }} />
     </View>
@@ -108,6 +127,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   settingsIcon: { fontSize: 16 },
+  offlineBadge: {
+    position: 'absolute',
+    top: 100,
+    alignSelf: 'center',
+    backgroundColor: 'rgba(239, 68, 68, 0.9)',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    zIndex: 10,
+  },
+  offlineBadgeText: {
+    color: 'white',
+    fontSize: 14,
+    fontWeight: '600',
+  },
   statusBar: {
     paddingVertical: 8,
     alignItems: 'center',

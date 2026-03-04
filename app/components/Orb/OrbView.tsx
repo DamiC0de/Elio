@@ -118,26 +118,26 @@ export function OrbView({ state, audioLevel = 0, onPress, onLongPress, onPressOu
 
     switch (state) {
       case 'idle': {
-        // Gentle floating/breathing
+        // More visible floating/breathing
         const breathe = Animated.loop(
           Animated.sequence([
             Animated.parallel([
-              Animated.timing(scale, { toValue: 1.03, duration: 2000, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-              Animated.timing(translateY, { toValue: -5, duration: 2000, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-              Animated.timing(glowOpacity, { toValue: 0.5, duration: 2000, useNativeDriver: true }),
+              Animated.timing(scale, { toValue: 1.08, duration: 1800, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+              Animated.timing(translateY, { toValue: -12, duration: 1800, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+              Animated.timing(glowOpacity, { toValue: 0.6, duration: 1800, useNativeDriver: true }),
             ]),
             Animated.parallel([
-              Animated.timing(scale, { toValue: 0.97, duration: 2000, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-              Animated.timing(translateY, { toValue: 5, duration: 2000, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-              Animated.timing(glowOpacity, { toValue: 0.25, duration: 2000, useNativeDriver: true }),
+              Animated.timing(scale, { toValue: 0.94, duration: 1800, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+              Animated.timing(translateY, { toValue: 12, duration: 1800, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+              Animated.timing(glowOpacity, { toValue: 0.3, duration: 1800, useNativeDriver: true }),
             ]),
           ])
         );
         
         const glowPulse = Animated.loop(
           Animated.sequence([
-            Animated.timing(glowScale, { toValue: 1.15, duration: 2000, useNativeDriver: true }),
-            Animated.timing(glowScale, { toValue: 1, duration: 2000, useNativeDriver: true }),
+            Animated.timing(glowScale, { toValue: 1.3, duration: 1800, useNativeDriver: true }),
+            Animated.timing(glowScale, { toValue: 1, duration: 1800, useNativeDriver: true }),
           ])
         );
         
@@ -147,19 +147,20 @@ export function OrbView({ state, audioLevel = 0, onPress, onLongPress, onPressOu
       }
       
       case 'listening': {
-        // Tilt like listening + ripple rings + subtle pulse
+        // Strong tilt + ripple rings + visible pulse
         Animated.timing(tilt, { toValue: 1, duration: 300, useNativeDriver: true }).start();
-        Animated.timing(glowOpacity, { toValue: 0.7, duration: 200, useNativeDriver: true }).start();
+        Animated.timing(glowOpacity, { toValue: 0.8, duration: 200, useNativeDriver: true }).start();
+        Animated.timing(glowScale, { toValue: 1.4, duration: 300, useNativeDriver: true }).start();
         
         const attentivePulse = Animated.loop(
           Animated.sequence([
             Animated.parallel([
-              Animated.timing(scale, { toValue: 1.06, duration: 500, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-              Animated.timing(translateY, { toValue: -3, duration: 500, useNativeDriver: true }),
+              Animated.timing(scale, { toValue: 1.12, duration: 400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+              Animated.timing(translateY, { toValue: -8, duration: 400, useNativeDriver: true }),
             ]),
             Animated.parallel([
-              Animated.timing(scale, { toValue: 1, duration: 500, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-              Animated.timing(translateY, { toValue: 3, duration: 500, useNativeDriver: true }),
+              Animated.timing(scale, { toValue: 0.95, duration: 400, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+              Animated.timing(translateY, { toValue: 8, duration: 400, useNativeDriver: true }),
             ]),
           ])
         );
@@ -172,25 +173,27 @@ export function OrbView({ state, audioLevel = 0, onPress, onLongPress, onPressOu
       }
       
       case 'processing': {
-        // Thinking: gentle sway + glow pulse
-        Animated.timing(glowOpacity, { toValue: 0.6, duration: 200, useNativeDriver: true }).start();
+        // Thinking: visible sway + strong glow pulse
+        Animated.timing(glowOpacity, { toValue: 0.75, duration: 200, useNativeDriver: true }).start();
         
         const think = Animated.loop(
           Animated.sequence([
-            Animated.timing(rotate, { toValue: 0.02, duration: 1000, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-            Animated.timing(rotate, { toValue: -0.02, duration: 1000, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+            Animated.timing(rotate, { toValue: 0.08, duration: 800, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+            Animated.timing(rotate, { toValue: -0.08, duration: 800, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
           ])
         );
         
         const pulse = Animated.loop(
           Animated.sequence([
             Animated.parallel([
-              Animated.timing(scale, { toValue: 1.04, duration: 600, useNativeDriver: true }),
-              Animated.timing(glowScale, { toValue: 1.3, duration: 600, useNativeDriver: true }),
+              Animated.timing(scale, { toValue: 1.1, duration: 500, useNativeDriver: true }),
+              Animated.timing(glowScale, { toValue: 1.5, duration: 500, useNativeDriver: true }),
+              Animated.timing(translateY, { toValue: -6, duration: 500, useNativeDriver: true }),
             ]),
             Animated.parallel([
-              Animated.timing(scale, { toValue: 0.98, duration: 600, useNativeDriver: true }),
-              Animated.timing(glowScale, { toValue: 1.1, duration: 600, useNativeDriver: true }),
+              Animated.timing(scale, { toValue: 0.95, duration: 500, useNativeDriver: true }),
+              Animated.timing(glowScale, { toValue: 1.1, duration: 500, useNativeDriver: true }),
+              Animated.timing(translateY, { toValue: 6, duration: 500, useNativeDriver: true }),
             ]),
           ])
         );
@@ -276,7 +279,7 @@ export function OrbView({ state, audioLevel = 0, onPress, onLongPress, onPressOu
   // Interpolations
   const tiltInterp = tilt.interpolate({
     inputRange: [0, 1],
-    outputRange: ['0deg', '8deg'], // Slight tilt when listening
+    outputRange: ['0deg', '15deg'], // Visible tilt when listening
   });
   
   const rotateInterp = rotate.interpolate({

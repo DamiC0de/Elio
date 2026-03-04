@@ -1,13 +1,13 @@
 /**
- * DIVA — Voice-First Main Screen
- * 2026 Design: Luminous Intelligence palette, gradient backgrounds
+ * DIVA — Main Screen with Mascot Orb
+ * 2026 Design: Dark-first, Lucide icons, mascot-centered
  */
 import React, { useState, useEffect } from 'react';
-import { View, StyleSheet, Text, Pressable, Animated } from 'react-native';
+import { View, StyleSheet, Text, Pressable } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-// import { BlurView } from 'expo-blur'; // Commented: may not work in Expo Go
+import { Settings, History, Wifi, WifiOff, MessageCircle } from 'lucide-react-native';
 import { OrbView } from '../../components/Orb/OrbView';
 import { TranscriptOverlay } from '../../components/TranscriptOverlay';
 import { ErrorOverlay } from '../../components/ErrorOverlay';
@@ -67,16 +67,18 @@ export default function OrbScreen() {
     <View style={styles.container}>
       {/* Gradient background */}
       <LinearGradient
-        colors={[theme.bgGradientStart, theme.bgGradientEnd]}
+        colors={isDark 
+          ? [theme.bgGradientStart, theme.bgGradientEnd, '#0D0D18']
+          : [theme.bgGradientStart, theme.bgGradientEnd]
+        }
         style={StyleSheet.absoluteFill}
-        start={{ x: 0.5, y: 0 }}
-        end={{ x: 0.5, y: 1 }}
+        locations={isDark ? [0, 0.5, 1] : [0, 1]}
       />
 
-      {/* Safe area content */}
+      {/* Content */}
       <View style={[styles.content, { paddingTop: insets.top }]}>
         
-        {/* Minimal header */}
+        {/* Header */}
         <View style={styles.header}>
           <Text style={[styles.brandText, { color: theme.text }]}>diva</Text>
           <View style={styles.headerActions}>
@@ -85,40 +87,51 @@ export default function OrbScreen() {
               hitSlop={12}
               style={({ pressed }) => [
                 styles.iconBtn,
-                { backgroundColor: theme.card, opacity: pressed ? 0.7 : 1 }
+                { 
+                  backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.04)',
+                  opacity: pressed ? 0.6 : 1 
+                }
               ]}
             >
-              <Text style={styles.iconBtnText}>📜</Text>
+              <History size={20} color={theme.textSecondary} strokeWidth={1.5} />
             </Pressable>
             <Pressable 
               onPress={() => router.push('/settings')} 
               hitSlop={12}
               style={({ pressed }) => [
                 styles.iconBtn,
-                { backgroundColor: theme.card, opacity: pressed ? 0.7 : 1 }
+                { 
+                  backgroundColor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.04)',
+                  opacity: pressed ? 0.6 : 1 
+                }
               ]}
             >
-              <Text style={styles.iconBtnText}>⚙️</Text>
+              <Settings size={20} color={theme.textSecondary} strokeWidth={1.5} />
             </Pressable>
           </View>
         </View>
 
-        {/* Status badges */}
-        {!isNetworkConnected && (
-          <View style={[styles.badge, styles.badgeError]}>
-            <Text style={styles.badgeText}>Hors ligne</Text>
-          </View>
-        )}
-        {isConversationActive && isNetworkConnected && (
-          <View style={[styles.badge, { backgroundColor: theme.primarySoft }]}>
-            <Text style={[styles.badgeText, { color: theme.primary }]}>💬 Conversation</Text>
-          </View>
-        )}
-        {!isWsConnected && isNetworkConnected && token && (
-          <View style={[styles.badge, { backgroundColor: theme.primarySoft }]}>
-            <Text style={[styles.badgeText, { color: theme.primary }]}>Connexion...</Text>
-          </View>
-        )}
+        {/* Status indicators */}
+        <View style={styles.statusRow}>
+          {!isNetworkConnected && (
+            <View style={[styles.statusBadge, { backgroundColor: 'rgba(255, 59, 48, 0.15)' }]}>
+              <WifiOff size={14} color={theme.error} strokeWidth={2} />
+              <Text style={[styles.statusText, { color: theme.error }]}>Hors ligne</Text>
+            </View>
+          )}
+          {isConversationActive && isNetworkConnected && (
+            <View style={[styles.statusBadge, { backgroundColor: theme.primarySoft }]}>
+              <MessageCircle size={14} color={theme.primary} strokeWidth={2} />
+              <Text style={[styles.statusText, { color: theme.primary }]}>Conversation</Text>
+            </View>
+          )}
+          {!isWsConnected && isNetworkConnected && token && (
+            <View style={[styles.statusBadge, { backgroundColor: theme.primarySoft }]}>
+              <Wifi size={14} color={theme.primary} strokeWidth={2} />
+              <Text style={[styles.statusText, { color: theme.primary }]}>Connexion...</Text>
+            </View>
+          )}
+        </View>
 
         {/* Main orb area */}
         <View style={styles.orbContainer}>
@@ -138,7 +151,7 @@ export default function OrbScreen() {
           ) : null}
         </View>
 
-        {/* Transcript area */}
+        {/* Transcript */}
         <View style={styles.transcriptContainer}>
           <TranscriptOverlay 
             text={transcript} 
@@ -154,7 +167,7 @@ export default function OrbScreen() {
           onDismiss={clearError}
         />
 
-        <View style={{ height: insets.bottom + 16 }} />
+        <View style={{ height: insets.bottom + 20 }} />
       </View>
     </View>
   );
@@ -187,36 +200,31 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   iconBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  iconBtnText: {
-    fontSize: 18,
   },
 
-  // Badges
-  badge: {
-    alignSelf: 'center',
-    paddingHorizontal: 16,
+  // Status
+  statusRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 10,
+    marginTop: 4,
+  },
+  statusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: 20,
-    marginTop: 8,
   },
-  badgeError: {
-    backgroundColor: 'rgba(255, 59, 48, 0.15)',
-  },
-  badgeText: {
-    fontSize: 14,
+  statusText: {
+    fontSize: 13,
     fontWeight: '600',
-    color: '#FF3B30',
   },
 
   // Orb
@@ -224,19 +232,18 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingVertical: 40,
   },
 
   // Hint
   hintContainer: {
-    height: 32,
+    height: 36,
     justifyContent: 'center',
     alignItems: 'center',
   },
   hintText: {
     fontSize: 16,
     fontWeight: '400',
-    letterSpacing: 0.3,
+    letterSpacing: 0.5,
   },
 
   // Transcript

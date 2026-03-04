@@ -21,8 +21,18 @@ const accent = {
   warning: '#FBBF24',
 };
 
+// Orb state colors (US-024, US-025)
+const orbColors = {
+  orbIdle: '#8B5CF6',       // Violet — ready, waiting
+  orbListening: '#3B82F6',  // Blue — active listening
+  orbProcessing: '#06B6D4', // Cyan — thinking/processing
+  orbSpeaking: '#10B981',   // Green — speaking response
+  orbError: '#EF4444',      // Red — error state
+};
+
 export const lightTheme = {
   ...accent,
+  ...orbColors,
   // Backgrounds
   bg: '#FAFAF9',            // Cloud Dancer warm white
   bgSecondary: '#F5F3EF',   // Slightly warm
@@ -44,13 +54,8 @@ export const lightTheme = {
   inputBorder: '#E2DFD8',
   inputFocus: accent.primary,
   
-  // Orb
+  // Orb background
   orbBg: '#F0EDE6',
-  orbActive: accent.primary,
-  orbListening: accent.teal,
-  orbProcessing: accent.primary,
-  orbSpeaking: accent.teal,
-  orbError: accent.error,
   
   // Misc
   shadow: 'rgba(0, 0, 0, 0.06)',
@@ -61,6 +66,7 @@ export const lightTheme = {
 
 export const darkTheme = {
   ...accent,
+  ...orbColors,
   // Backgrounds
   bg: '#0C0C14',            // Deep space navy
   bgSecondary: '#12121E',
@@ -82,13 +88,8 @@ export const darkTheme = {
   inputBorder: '#2A2A44',
   inputFocus: accent.primaryLight,
   
-  // Orb
+  // Orb background
   orbBg: '#1A1A2E',
-  orbActive: accent.primaryLight,
-  orbListening: accent.teal,
-  orbProcessing: accent.primaryLight,
-  orbSpeaking: accent.teal,
-  orbError: accent.error,
   
   // Misc
   shadow: 'rgba(0, 0, 0, 0.3)',

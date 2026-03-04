@@ -13,6 +13,7 @@ import { getEmails, sendEmail, formatEmailsForContext, isSignedIn as isGmailSign
 import { searchContacts, formatContactsForContext, callPhone } from '../lib/contacts';
 import { ERROR_MESSAGES, type ErrorMessage } from '../constants/errors';
 import { getOfflineResponse, OFFLINE_DEFAULT_MESSAGE } from '../lib/offlineResponses';
+import { useTimers } from '../lib/timerService';
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL ?? 'http://72.60.155.227:3001';
 const WS_URL = API_URL.replace('http', 'ws');
@@ -43,6 +44,22 @@ const LONG_RECORDING_SILENCE_MS = 3500; // 3.5s silence if recording > 10s (user
 
 // Audio level detection — US-006
 const MIN_AUDIBLE_LEVEL = -50; // dB — below this = inaudible
+
+// US-005: Conversation mode config
+const CONVERSATION_TIMEOUT_MS = 30000; // 30s total silence → exit conversation mode
+const STOP_COMMANDS = ['stop', 'arrête', 'arrêter', 'termine', 'fin', 'merci diva', 'au revoir'];
+
+/**
+ * US-005: Check if transcript contains a stop command
+ */
+function checkForStopCommand(transcript: string): boolean {
+  const lowered = transcript.toLowerCase().trim();
+  return STOP_COMMANDS.some(cmd => 
+    lowered === cmd || 
+    lowered.startsWith(cmd + ' ') || 
+    lowered.endsWith(' ' + cmd)
+  );
+}
 
 /**
  * EL-032 — Handle server request for captured notifications.
@@ -88,6 +105,8 @@ export function useVoiceSession({ token, isNetworkConnected = true }: VoiceSessi
   const [audioLevel, setAudioLevel] = useState(0);
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<ErrorMessage | null>(null);
+  // US-023: Timer management
+  const { createTimer, cancelTimer, cancelLastTimer, cancelAllTimers, timers } = useTimers();
   
   // Store network status in ref for use in callbacks
   const isNetworkConnectedRef = useRef(isNetworkConnected);
@@ -388,6 +407,104 @@ export function useVoiceSession({ token, isNetworkConnected = true }: VoiceSessi
                   if (ws.readyState === WebSocket.OPEN) {
                     ws.send(JSON.stringify({
                       type: 'call_response',
+                      error: String(err),
+                    }));
+                  }
+                }
+              })();
+              break;
+
+            case 'request_create_timer':
+              // US-023: Server asks to create a timer
+              (async () => {
+                try {
+                  const durationSeconds = msg.duration_seconds || msg.durationSeconds;
+                  const label = msg.label;
+                  
+                  if (!durationSeconds || durationSeconds <= 0) {
+                    if (ws.readyState === WebSocket.OPEN) {
+                      ws.send(JSON.stringify({
+                        type: 'create_timer_response',
+                        success: false,
+                        error: 'Durée invalide',
+                      }));
+                    }
+                    return;
+                  }
+                  
+                  const timer = await createTimer(durationSeconds, label);
+                  if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                      type: 'create_timer_response',
+                      success: true,
+                      timer: {
+                        id: timer.id,
+                        durationSeconds: timer.durationSeconds,
+                        endTime: timer.endTime,
+                        label: timer.label,
+                      },
+                    }));
+                  }
+                } catch (err) {
+                  if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                      type: 'create_timer_response',
+                      success: false,
+                      error: String(err),
+                    }));
+                  }
+                }
+              })();
+              break;
+
+            case 'request_cancel_timer':
+              // US-023: Server asks to cancel timer(s)
+              (async () => {
+                try {
+                  const timerId = msg.timer_id || msg.timerId;
+                  const cancelAll = msg.cancel_all || msg.cancelAll;
+                  
+                  if (cancelAll) {
+                    // Cancel all timers
+                    const count = await cancelAllTimers();
+                    if (ws.readyState === WebSocket.OPEN) {
+                      ws.send(JSON.stringify({
+                        type: 'cancel_timer_response',
+                        success: true,
+                        cancelledCount: count,
+                        message: count > 0 
+                          ? `${count} timer${count > 1 ? 's' : ''} annulé${count > 1 ? 's' : ''}`
+                          : "Aucun timer en cours",
+                      }));
+                    }
+                  } else if (timerId) {
+                    // Cancel specific timer
+                    const success = await cancelTimer(timerId);
+                    if (ws.readyState === WebSocket.OPEN) {
+                      ws.send(JSON.stringify({
+                        type: 'cancel_timer_response',
+                        success,
+                        timerId,
+                        message: success ? 'Timer annulé' : 'Timer non trouvé',
+                      }));
+                    }
+                  } else {
+                    // Cancel last timer (most recent)
+                    const cancelled = await cancelLastTimer();
+                    if (ws.readyState === WebSocket.OPEN) {
+                      ws.send(JSON.stringify({
+                        type: 'cancel_timer_response',
+                        success: cancelled !== null,
+                        timerId: cancelled?.id,
+                        message: cancelled ? 'Timer annulé' : "Aucun timer en cours",
+                      }));
+                    }
+                  }
+                } catch (err) {
+                  if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                      type: 'cancel_timer_response',
+                      success: false,
                       error: String(err),
                     }));
                   }

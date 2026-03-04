@@ -204,31 +204,39 @@ export function OrbView({ state, audioLevel = 0, onPress, onLongPress, onPressOu
       }
       
       case 'speaking': {
-        // Expressive bounce + ripple rings
-        Animated.timing(glowOpacity, { toValue: 0.65, duration: 200, useNativeDriver: true }).start();
+        // Very visible bounce + ripple rings + strong glow
+        Animated.timing(glowOpacity, { toValue: 0.85, duration: 200, useNativeDriver: true }).start();
+        Animated.timing(glowScale, { toValue: 1.5, duration: 200, useNativeDriver: true }).start();
         
-        // Bouncy "talking" animation
+        // Bouncy "talking" animation - more pronounced
         const speak = Animated.loop(
           Animated.sequence([
             Animated.parallel([
-              Animated.timing(scale, { toValue: 1.08, duration: 150, easing: Easing.out(Easing.ease), useNativeDriver: true }),
-              Animated.timing(translateY, { toValue: -8, duration: 150, useNativeDriver: true }),
+              Animated.timing(scale, { toValue: 1.15, duration: 120, easing: Easing.out(Easing.ease), useNativeDriver: true }),
+              Animated.timing(translateY, { toValue: -15, duration: 120, useNativeDriver: true }),
             ]),
             Animated.parallel([
-              Animated.timing(scale, { toValue: 0.96, duration: 150, easing: Easing.in(Easing.ease), useNativeDriver: true }),
-              Animated.timing(translateY, { toValue: 4, duration: 150, useNativeDriver: true }),
+              Animated.timing(scale, { toValue: 0.9, duration: 120, easing: Easing.in(Easing.ease), useNativeDriver: true }),
+              Animated.timing(translateY, { toValue: 8, duration: 120, useNativeDriver: true }),
             ]),
             Animated.parallel([
-              Animated.timing(scale, { toValue: 1.02, duration: 100, useNativeDriver: true }),
-              Animated.timing(translateY, { toValue: 0, duration: 100, useNativeDriver: true }),
+              Animated.timing(scale, { toValue: 1.05, duration: 80, useNativeDriver: true }),
+              Animated.timing(translateY, { toValue: 0, duration: 80, useNativeDriver: true }),
             ]),
-            Animated.delay(100), // Brief pause between "words"
+            Animated.delay(60), // Brief pause between "words"
+          ])
+        );
+        
+        const glowPulse = Animated.loop(
+          Animated.sequence([
+            Animated.timing(glowScale, { toValue: 1.6, duration: 200, useNativeDriver: true }),
+            Animated.timing(glowScale, { toValue: 1.3, duration: 200, useNativeDriver: true }),
           ])
         );
         
         const ripple = createRippleAnimation();
         
-        animRef.current = Animated.parallel([speak, ripple]);
+        animRef.current = Animated.parallel([speak, glowPulse, ripple]);
         animRef.current.start();
         break;
       }

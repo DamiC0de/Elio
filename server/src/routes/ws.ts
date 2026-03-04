@@ -20,7 +20,7 @@ export async function wsRoutes(app: FastifyInstance): Promise<void> {
     orchestrator = new Orchestrator(app.log, null);
   }
 
-  app.get('/ws', { websocket: true }, (socket: WebSocket, request) => {
+  app.get('/ws', { websocket: true }, async (socket: WebSocket, request) => {
     // Extract userId from auth token (query param or header)
     const url = new URL(request.url, `http://${request.headers.host}`);
     const token = url.searchParams.get('token');

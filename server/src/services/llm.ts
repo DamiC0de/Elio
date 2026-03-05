@@ -240,7 +240,7 @@ Tu peux :
     // Build messages array (last 20)
     const messages: Anthropic.MessageParam[] = [];
 
-    const recentHistory = history.slice(-20);
+    const recentHistory = history.slice(-10);
     for (const msg of recentHistory) {
       messages.push({ role: msg.role, content: msg.content });
     }
@@ -333,7 +333,7 @@ Tu peux :
     const { message, history = [], memories, userSettings } = options;
 
     const messages: Anthropic.MessageParam[] = [];
-    const recentHistory = history.slice(-20);
+    const recentHistory = history.slice(-10);
     for (const msg of recentHistory) {
       messages.push({ role: msg.role, content: msg.content });
     }

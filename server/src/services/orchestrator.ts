@@ -1060,19 +1060,10 @@ export class Orchestrator {
         /^(salut|bonjour|hey|coucou|ça va|oui|non|ok|merci|au revoir|stop|arrête|d'accord)/i.test(textLower) ||  // Starts with greeting
         /^(qui es[- ]tu|t['']?es qui|c['']?est quoi|comment tu)/i.test(textLower);  // Identity questions
       
-      // Parallel: memories (if needed) + user settings
+      // Parallel: memories (if needed) + user settings (cached)
       const [memories, userSettings] = await Promise.all([
         isTrivialQuery ? Promise.resolve([]) : this.retrieveMemories(request.userId, text),
-        (async (): Promise<any> => {
-          try {
-            const { data } = await getSupabase()
-              .from('users')
-              .select('settings')
-              .eq('id', request.userId)
-              .single();
-            return data?.settings;
-          } catch { return undefined; }
-        })(),
+        this.getUserSettings(request.userId),
       ]);
       metrics.prep = Date.now() - tPrep;
 
@@ -1106,8 +1097,44 @@ export class Orchestrator {
         metrics.search = Date.now() - tSearch;
       }
 
-      // LLM call
+      // LLM call with streaming TTS (start TTS as sentences complete)
       const tLlm = Date.now();
+      let fullText = '';
+      let sentenceIndex = 0;
+      const ttsPromises: Promise<void>[] = [];
+      const ttsPending = new Map<number, string | null>();
+      let nextTtsToSend = 0;
+      let ttsStarted = false;
+      
+      // Helper to start TTS for a sentence and stream when ready
+      const streamSentence = (sentence: string, index: number) => {
+        if (!sentence.trim()) return;
+        
+        if (!ttsStarted) {
+          ttsStarted = true;
+          this.setState(socket, request, RequestState.SYNTHESIZING);
+        }
+        
+        ttsPending.set(index, null);
+        const promise = this.synthesize(`${request.id}-${index}`, sentence).then(result => {
+          if (request.cancelled) return;
+          ttsPending.set(index, result.audio_base64);
+          
+          // Send all ready chunks in order
+          while (ttsPending.has(nextTtsToSend) && ttsPending.get(nextTtsToSend) !== null) {
+            const audio = ttsPending.get(nextTtsToSend)!;
+            if (audio) this.sendEvent(socket, { type: 'tts_audio', audio, requestId: request.id });
+            ttsPending.delete(nextTtsToSend);
+            nextTtsToSend++;
+          }
+        }).catch(e => {
+          this.logger.error({ err: e, sentence, index }, 'TTS sentence failed');
+          ttsPending.set(index, '');
+        });
+        ttsPromises.push(promise);
+      };
+
+      // First LLM call (may include tools)
       let llmResult = await this.llm.chat({
         userId: request.userId,
         message: preSearchContext ? `${text}${preSearchContext}` : text,
@@ -1145,69 +1172,31 @@ export class Orchestrator {
         if (request.cancelled) return;
       }
 
-      // Clean LLM output for TTS
-      const fullText = this.cleanForTTS(llmResult.text);
-
-      // US-039: Add assistant response to history BEFORE TTS starts
-      // This way, if user interrupts during TTS, we can mark the response as interrupted
-      sessionHistory.push({ role: 'assistant', content: fullText });
-      if (sessionHistory.length > 20) sessionHistory.splice(0, sessionHistory.length - 20);
-
-      // Streaming TTS: split into sentences and synthesize in parallel
-      if (fullText.trim()) {
-        this.setState(socket, request, RequestState.SYNTHESIZING);
-        const tTts = Date.now();
-
-        // Split into sentences (. ! ? or long pause)
-        const sentences = fullText
-          .split(/(?<=[.!?])\s+/)
-          .map(s => s.trim())
-          .filter(s => s.length > 0);
-
-        // Stream each sentence immediately for fastest first-byte
-        // With local Piper TTS (22kHz), single sentences are fast enough
-        const BATCH_SIZE = 1;
-        const batches: string[] = [];
-        for (let i = 0; i < sentences.length; i += BATCH_SIZE) {
-          batches.push(sentences.slice(i, i + BATCH_SIZE).join(' '));
-        }
-
-        if (batches.length <= 1) {
-          // Short response: single TTS call (less overhead)
-          const ttsResult = await this.synthesize(request.id, fullText.trim());
-          this.sendEvent(socket, { type: 'tts_audio', audio: ttsResult.audio_base64, requestId: request.id });
-        } else {
-          // Long response: parallel TTS with ordered streaming output
-          // Start all TTS jobs in parallel, but send in order as they complete
-          const pending = new Map<number, string | null>(); // index -> audio or null if pending
-          let nextToSend = 0;
-
-          await Promise.all(batches.map(async (batch, i) => {
-            pending.set(i, null); // Mark as pending
-            try {
-              const result = await this.synthesize(`${request.id}-${i}`, batch);
-              pending.set(i, result.audio_base64);
-              
-              // Send all ready chunks in order
-              while (pending.has(nextToSend) && pending.get(nextToSend) !== null) {
-                if (request.cancelled) return;
-                const audio = pending.get(nextToSend)!;
-                this.sendEvent(socket, { type: 'tts_audio', audio, requestId: request.id });
-                pending.delete(nextToSend);
-                nextToSend++;
-              }
-            } catch (e) {
-              this.logger.error({ err: e, batch, index: i }, 'TTS batch failed');
-              pending.set(i, ''); // Empty string to not block
-            }
-          }));
-        }
-
-        metrics.tts = Date.now() - tTts;
+      // Clean LLM output and start TTS streaming
+      fullText = this.cleanForTTS(llmResult.text);
+      
+      // Split into sentences and start TTS immediately
+      const tTts = Date.now();
+      const sentences = fullText.split(/(?<=[.!?])\s+/).map(s => s.trim()).filter(s => s.length > 0);
+      
+      // Start all TTS in parallel (they'll be sent in order as they complete)
+      for (const sentence of sentences) {
+        streamSentence(sentence, sentenceIndex++);
+      }
+      
+      // Wait for all TTS to complete
+      if (ttsPromises.length > 0) {
+        await Promise.all(ttsPromises);
+      }
+      
+      metrics.tts = Date.now() - tTts;
+      if (ttsStarted) {
         this.setState(socket, request, RequestState.STREAMING_AUDIO);
       }
 
-      // Note: sessionHistory already updated before TTS (US-039 - for interrupt support)
+      // US-039: Add assistant response to history
+      sessionHistory.push({ role: 'assistant', content: fullText });
+      if (sessionHistory.length > 10) sessionHistory.splice(0, sessionHistory.length - 10);
 
       this.sendEvent(socket, { type: 'text_response', text: fullText, requestId: request.id, isPartial: false });
 
@@ -1775,6 +1764,30 @@ export class Orchestrator {
   // Simple memory cache: userId -> { memories, timestamp }
   private memoryCache = new Map<string, { memories: string[]; timestamp: number }>();
   private readonly MEMORY_CACHE_TTL = 60_000; // 1 minute
+
+  // User settings cache: userId -> { settings, timestamp }
+  private settingsCache = new Map<string, { settings: any; timestamp: number }>();
+  private readonly SETTINGS_CACHE_TTL = 300_000; // 5 minutes
+
+  private async getUserSettings(userId: string): Promise<any> {
+    const cached = this.settingsCache.get(userId);
+    if (cached && Date.now() - cached.timestamp < this.SETTINGS_CACHE_TTL) {
+      return cached.settings;
+    }
+
+    try {
+      const { data } = await getSupabase()
+        .from('users')
+        .select('settings')
+        .eq('id', userId)
+        .single();
+      
+      this.settingsCache.set(userId, { settings: data?.settings, timestamp: Date.now() });
+      return data?.settings;
+    } catch {
+      return undefined;
+    }
+  }
 
   private async retrieveMemories(userId: string, query: string): Promise<string[]> {
     // Check cache first

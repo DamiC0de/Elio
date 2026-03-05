@@ -201,13 +201,23 @@ export function useVoiceSession({
     onOpen: () => {
       // Clear any stale audio from previous session
       clearAudioQueue();
-      setOrbState('idle');
+      
+      // If auto-listen was active before disconnect, resume listening
+      if (autoListenRef.current) {
+        console.log('[WS] Reconnected, resuming auto-listen');
+        setTimeout(() => {
+          if (autoListenRef.current) {
+            doStartListening();
+          }
+        }, 300);
+      } else {
+        setOrbState('idle');
+      }
     },
     onClose: () => {
-      // Keep auto-listen if we're playing audio (transient disconnect)
-      if (!isPlayingRef.current && audioQueueRef.current.length === 0) {
-        autoListenRef.current = false;
-      }
+      // Don't reset auto-listen on disconnect - let the reconnect handle it
+      // This preserves conversation flow across transient disconnects
+      console.log('[WS] Disconnected, auto-listen preserved:', autoListenRef.current);
     },
     onMessage: async (event) => {
       if (typeof event.data !== 'string') {

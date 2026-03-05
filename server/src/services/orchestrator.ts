@@ -1054,7 +1054,11 @@ export class Orchestrator {
 
       // Pre-check: skip memory for trivial queries
       const tPrep = Date.now();
-      const isTrivialQuery = /^(salut|bonjour|hey|coucou|ça va|oui|non|ok|merci|au revoir|stop|arrête|d'accord)[\s?!.,]*$/i.test(text.trim()) || text.trim().length < 10;
+      const textLower = text.trim().toLowerCase();
+      const isTrivialQuery = 
+        text.trim().length < 15 ||  // Very short queries
+        /^(salut|bonjour|hey|coucou|ça va|oui|non|ok|merci|au revoir|stop|arrête|d'accord)/i.test(textLower) ||  // Starts with greeting
+        /^(qui es[- ]tu|t['']?es qui|c['']?est quoi|comment tu)/i.test(textLower);  // Identity questions
       
       // Parallel: memories (if needed) + user settings
       const [memories, userSettings] = await Promise.all([
@@ -1078,15 +1082,16 @@ export class Orchestrator {
       if (userHist) userHist.lastActivity = Date.now();
 
       // Pre-search: skip for small talk, confirmations, short queries, or personal questions
-      const isSmallTalk = /^(salut|bonjour|hey|coucou|ça va|comment vas|merci|au revoir|bonne nuit|ok|d'accord|oui|non|cool|super|parfait|comment tu t'appelles|qui es[- ]tu|c'est quoi ton nom|rappelle[- ]?toi|souviens[- ]?toi|tu te souviens|qu'?est[- ]ce que tu sais sur moi)[\s?!.,]*$/i.test(text.trim());
-      const isConfirmation = /^(oui|non|ok|d'accord|vas[- ]?y|fais[- ]?le|ajoute|confirme|annule|stop|arrête|c'est bon|c'est ça|exactement|tout à fait|je veux bien|s'il te pla[iî]t|please)/i.test(text.trim());
-      const isTooShort = text.trim().split(/\s+/).length <= 3 && !text.includes('?');
-      const isPersonal = /mon\s+(agenda|calendrier|planning|rdv|rendez|mail|message|notif)/i.test(text);
-      const isActionRequest = /(ajoute|supprime|crée|envoie|lis|ouvre|rappelle|met|mets)[\s-]/i.test(text.trim());
-      // Skip search for conversational/identity questions that don't need web search
-      const isConversational = /(tu m'entends|tu es l[àa]|tu fonctionnes|tu marches|allo|qui es[- ]tu|tu t'appelles|ton nom|tu fais quoi|tu sers [àa] quoi|qu'est[- ]ce que tu (es|fais|peux)|tu peux (faire|m'aider)|aide[- ]moi|raconte|blague|histoire|chante|parle[- ]moi de toi|pr[ée]sente[- ]toi)/i.test(text);
-      const isSimpleQuestion = text.trim().split(/\s+/).length <= 8 && /^(est[- ]ce que|tu |comment |pourquoi tu|qu'est)/i.test(text.trim());
-      const skipSearch = isSmallTalk || isConfirmation || isTooShort || isPersonal || isActionRequest || isConversational || isSimpleQuestion;
+      const isSmallTalk = /^(salut|bonjour|hey|coucou|ça va|comment vas|merci|au revoir|bonne nuit|ok|d'accord|oui|non|cool|super|parfait)/i.test(textLower);
+      const isIdentityQuestion = /(qui es[- ]tu|t['']?es qui|c['']?est quoi (ton nom|diva)|comment tu t['']?appelles|tu t['']?appelles comment|pr[ée]sente[- ]?toi|parle[- ]?moi de toi)/i.test(textLower);
+      const isConfirmation = /^(oui|non|ok|d'accord|vas[- ]?y|fais[- ]?le|ajoute|confirme|annule|stop|arrête|c'est bon|c'est ça|exactement|tout à fait|je veux bien|s'il te pla[iî]t|please)/i.test(textLower);
+      const isTooShort = text.trim().split(/\s+/).length <= 4;
+      const isPersonal = /mon\s+(agenda|calendrier|planning|rdv|rendez|mail|message|notif)/i.test(textLower);
+      const isActionRequest = /(ajoute|supprime|crée|envoie|lis|ouvre|rappelle|met|mets)[\s-]/i.test(textLower);
+      // Skip search for conversational questions that don't need web search
+      const isConversational = /(tu m['']?entends|tu es l[àa]|tu fonctionnes|tu marches|allo|tu fais quoi|tu sers [àa] quoi|qu['']?est[- ]ce que tu (es|fais|peux)|tu peux (faire|m['']?aider)|aide[- ]?moi|raconte|blague|histoire|chante)/i.test(textLower);
+      const isSimpleQuestion = text.trim().split(/\s+/).length <= 8 && /^(est[- ]ce que|tu |comment |pourquoi tu|qu['']?est)/i.test(textLower);
+      const skipSearch = isSmallTalk || isIdentityQuestion || isConfirmation || isTooShort || isPersonal || isActionRequest || isConversational || isSimpleQuestion;
 
       let preSearchContext = '';
       if (!skipSearch) {

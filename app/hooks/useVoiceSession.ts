@@ -480,6 +480,7 @@ export function useVoiceSession({
       case 'assistant_message':
       case 'text_response': {
         const responseText = (msg.text || msg.content || '') as string;
+        console.log('[WS] Received assistant response, setting orbState to speaking');
 
         if (transcriptClearTimeoutRef.current) {
           clearTimeout(transcriptClearTimeoutRef.current);
@@ -489,6 +490,9 @@ export function useVoiceSession({
         setTranscript(responseText);
         setTranscriptRole('assistant');
         lastAssistantMessageRef.current = responseText;
+        
+        // Trigger speaking animation when we receive the response
+        setOrbState('speaking');
         break;
       }
 

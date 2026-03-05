@@ -21,9 +21,9 @@ import { router } from 'expo-router';
 import * as WebBrowser from 'expo-web-browser';
 
 const TONE_OPTIONS = [
-  { label: '😊 Amical', value: 'friendly' },
-  { label: '👔 Pro', value: 'professional' },
-  { label: '😎 Décontracté', value: 'casual' },
+  { label: 'Amical', value: 'friendly' },
+  { label: 'Pro', value: 'professional' },
+  { label: 'Décontracté', value: 'casual' },
 ];
 
 const VERBOSITY_OPTIONS = [

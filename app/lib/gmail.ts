@@ -10,11 +10,15 @@ import Constants from 'expo-constants';
 // Complete auth session for web browser
 WebBrowser.maybeCompleteAuthSession();
 
-// Gmail OAuth config - client IDs from environment variables
+// Gmail OAuth config
+// Development defaults - in production, use proper env vars
+const DEV_GOOGLE_CLIENT_ID_IOS = '794649959450-o6o3rpi0aanhm0jg5v9uvp8sgiuhiso7.apps.googleusercontent.com';
+const DEV_GOOGLE_CLIENT_ID_WEB = '794649959450-fc4ujikilh1eavfnbh3ov4aq3uphvq91.apps.googleusercontent.com';
+
 // iOS client ID is for standalone builds only
-const GOOGLE_CLIENT_ID_IOS = process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID_IOS;
+const GOOGLE_CLIENT_ID_IOS = process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID_IOS || DEV_GOOGLE_CLIENT_ID_IOS;
 // Web client ID is required for Expo Go testing (uses auth.expo.io proxy)
-const GOOGLE_CLIENT_ID_WEB = process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID_WEB;
+const GOOGLE_CLIENT_ID_WEB = process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID_WEB || DEV_GOOGLE_CLIENT_ID_WEB;
 
 // Detect if running in Expo Go
 const isExpoGo = Constants.appOwnership === 'expo';

@@ -240,36 +240,53 @@ export function OrbView({ state, audioLevel = 0, onPress, onLongPress, onPressOu
         // Set initial values
         scale.setValue(1);
         translateY.setValue(0);
-        glowOpacity.setValue(0.9);
-        glowScale.setValue(1.5);
+        glowOpacity.setValue(1);
+        glowScale.setValue(1.6);
         
-        // Simple but very visible bounce
-        const bounce = Animated.loop(
+        // Energetic "talking" bounce - like the mascot is speaking with enthusiasm
+        const talkBounce = Animated.loop(
           Animated.sequence([
-            Animated.timing(scale, { toValue: 1.15, duration: 150, easing: Easing.out(Easing.ease), useNativeDriver: true }),
-            Animated.timing(scale, { toValue: 0.9, duration: 150, easing: Easing.in(Easing.ease), useNativeDriver: true }),
-            Animated.timing(scale, { toValue: 1, duration: 100, useNativeDriver: true }),
+            // Quick bounce up
+            Animated.parallel([
+              Animated.timing(scale, { toValue: 1.18, duration: 120, easing: Easing.out(Easing.back(1.5)), useNativeDriver: true }),
+              Animated.timing(translateY, { toValue: -18, duration: 120, easing: Easing.out(Easing.ease), useNativeDriver: true }),
+            ]),
+            // Squash down
+            Animated.parallel([
+              Animated.timing(scale, { toValue: 0.92, duration: 100, easing: Easing.in(Easing.ease), useNativeDriver: true }),
+              Animated.timing(translateY, { toValue: 8, duration: 100, useNativeDriver: true }),
+            ]),
+            // Settle
+            Animated.parallel([
+              Animated.timing(scale, { toValue: 1.05, duration: 80, useNativeDriver: true }),
+              Animated.timing(translateY, { toValue: 0, duration: 80, useNativeDriver: true }),
+            ]),
+            // Small bounce
+            Animated.parallel([
+              Animated.timing(scale, { toValue: 1.1, duration: 100, easing: Easing.out(Easing.ease), useNativeDriver: true }),
+              Animated.timing(translateY, { toValue: -8, duration: 100, useNativeDriver: true }),
+            ]),
+            // Return
+            Animated.parallel([
+              Animated.timing(scale, { toValue: 1, duration: 100, useNativeDriver: true }),
+              Animated.timing(translateY, { toValue: 0, duration: 100, useNativeDriver: true }),
+            ]),
           ])
         );
         
-        const bobUp = Animated.loop(
-          Animated.sequence([
-            Animated.timing(translateY, { toValue: -15, duration: 150, useNativeDriver: true }),
-            Animated.timing(translateY, { toValue: 5, duration: 150, useNativeDriver: true }),
-            Animated.timing(translateY, { toValue: 0, duration: 100, useNativeDriver: true }),
-          ])
-        );
-        
+        // Intense glow pulsing
         const glowPulse = Animated.loop(
           Animated.sequence([
-            Animated.timing(glowScale, { toValue: 1.7, duration: 200, useNativeDriver: true }),
-            Animated.timing(glowScale, { toValue: 1.3, duration: 200, useNativeDriver: true }),
+            Animated.timing(glowScale, { toValue: 1.9, duration: 250, easing: Easing.out(Easing.ease), useNativeDriver: true }),
+            Animated.timing(glowOpacity, { toValue: 0.7, duration: 150, useNativeDriver: true }),
+            Animated.timing(glowScale, { toValue: 1.4, duration: 250, easing: Easing.in(Easing.ease), useNativeDriver: true }),
+            Animated.timing(glowOpacity, { toValue: 1, duration: 150, useNativeDriver: true }),
           ])
         );
         
         const ripple = createRippleAnimation();
         
-        animRef.current = Animated.parallel([bounce, bobUp, glowPulse, ripple]);
+        animRef.current = Animated.parallel([talkBounce, glowPulse, ripple]);
         animRef.current.start();
         break;
       }

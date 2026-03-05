@@ -104,7 +104,7 @@ export default function SettingsScreen() {
       { text: 'Annuler', style: 'cancel' },
       { text: 'Déconnecter', style: 'destructive', onPress: async () => {
         try {
-          await api.post('/api/v1/gmail/disconnect');
+          await api.delete('/api/v1/gmail/disconnect');
           setGmailEmail(null);
         } catch { Alert.alert('Erreur', 'Impossible de déconnecter Gmail'); }
       }},

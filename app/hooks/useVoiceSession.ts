@@ -563,19 +563,21 @@ export function useVoiceSession({
   /**
    * US-039: Interrupt - stop current TTS but preserve conversation context.
    */
-  const interrupt = useCallback(() => {
+  const interrupt = useCallback(async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     stopKeywordListening();
     
+    // Stop audio FIRST and wait for it
     clearAudioQueue();
+    await stopAudio();
     stoppingRef.current = false;
-    stopAudio();
 
     if (transcriptClearTimeoutRef.current) {
       clearTimeout(transcriptClearTimeoutRef.current);
       transcriptClearTimeoutRef.current = null;
     }
 
+    // Tell server to stop generating
     send({ type: 'interrupt' });
     setTranscript(null);
     setOrbState('listening');
@@ -588,14 +590,16 @@ export function useVoiceSession({
     keywordInterruptRef.current = interrupt;
   }, [interrupt]);
 
-  const cancel = useCallback(() => {
+  const cancel = useCallback(async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     stopKeywordListening();
     
     autoListenRef.current = false;
     stoppingRef.current = false;
+    
+    // Stop audio FIRST and wait for it
     clearAudioQueue();
-    stopAudio();
+    await stopAudio();
 
     if (transcriptClearTimeoutRef.current) {
       clearTimeout(transcriptClearTimeoutRef.current);

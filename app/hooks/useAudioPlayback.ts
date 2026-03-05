@@ -20,6 +20,8 @@ export interface AudioPlaybackReturn {
   audioQueueRef: React.MutableRefObject<string[]>;
   /** Current sound instance ref */
   soundRef: React.MutableRefObject<Audio.Sound | null>;
+  /** Whether playback is stopped (reset by enqueue) */
+  isStoppedRef: React.MutableRefObject<boolean>;
 }
 
 interface AudioPlaybackOptions {
@@ -37,6 +39,7 @@ export function useAudioPlayback(options: AudioPlaybackOptions = {}): AudioPlayb
   const audioQueueRef = useRef<string[]>([]);
   const isPlayingRef = useRef(false);
   const soundRef = useRef<Audio.Sound | null>(null);
+  const isStoppedRef = useRef(false);
   
   // Store callbacks in refs to avoid dependency issues
   const onPlaybackStartRef = useRef(onPlaybackStart);
@@ -48,8 +51,9 @@ export function useAudioPlayback(options: AudioPlaybackOptions = {}): AudioPlayb
   onChunkPlayRef.current = onChunkPlay;
 
   const playNextInQueue = useCallback(async () => {
-    if (isPlayingRef.current || audioQueueRef.current.length === 0) {
-      if (audioQueueRef.current.length === 0 && !isPlayingRef.current) {
+    // Don't play if stopped or already playing
+    if (isStoppedRef.current || isPlayingRef.current || audioQueueRef.current.length === 0) {
+      if (audioQueueRef.current.length === 0 && !isPlayingRef.current && !isStoppedRef.current) {
         // Queue empty - notify completion
         onPlaybackCompleteRef.current?.();
       }
@@ -65,10 +69,24 @@ export function useAudioPlayback(options: AudioPlaybackOptions = {}): AudioPlayb
         playsInSilentModeIOS: true 
       });
       
+      // Check again after async operation
+      if (isStoppedRef.current) {
+        isPlayingRef.current = false;
+        return;
+      }
+      
       const { sound } = await Audio.Sound.createAsync(
         { uri: `data:audio/wav;base64,${base64}` },
         { shouldPlay: true },
       );
+      
+      // Check again after async operation
+      if (isStoppedRef.current) {
+        await sound.stopAsync();
+        await sound.unloadAsync();
+        isPlayingRef.current = false;
+        return;
+      }
       
       soundRef.current = sound;
       onChunkPlayRef.current?.();
@@ -76,19 +94,29 @@ export function useAudioPlayback(options: AudioPlaybackOptions = {}): AudioPlayb
       sound.setOnPlaybackStatusUpdate((status) => {
         if (status.isLoaded && status.didJustFinish) {
           sound.unloadAsync();
-          soundRef.current = null;
+          if (soundRef.current === sound) {
+            soundRef.current = null;
+          }
           isPlayingRef.current = false;
-          playNextInQueue();
+          // Only continue if not stopped
+          if (!isStoppedRef.current) {
+            playNextInQueue();
+          }
         }
       });
     } catch (err) {
       console.error('[AudioPlayback] Error playing chunk:', err);
       isPlayingRef.current = false;
-      playNextInQueue();
+      if (!isStoppedRef.current) {
+        playNextInQueue();
+      }
     }
   }, []);
 
   const enqueueAudio = useCallback((base64: string) => {
+    // Reset stopped state when new audio comes in
+    isStoppedRef.current = false;
+    
     // Prevent queue overflow (OOM protection)
     if (audioQueueRef.current.length >= MAX_AUDIO_QUEUE_SIZE) {
       console.warn('[AudioPlayback] Queue full, dropping old chunk');
@@ -113,15 +141,20 @@ export function useAudioPlayback(options: AudioPlaybackOptions = {}): AudioPlayb
   }, []);
 
   const stopAudio = useCallback(async () => {
+    // Set stopped flag FIRST to prevent any new playback
+    isStoppedRef.current = true;
     audioQueueRef.current = [];
     isPlayingRef.current = false;
     
     if (soundRef.current) {
-      try {
-        await soundRef.current.stopAsync();
-        await soundRef.current.unloadAsync();
-      } catch {}
+      const sound = soundRef.current;
       soundRef.current = null;
+      try {
+        await sound.stopAsync();
+        await sound.unloadAsync();
+      } catch {
+        // Ignore errors during stop
+      }
     }
   }, []);
 
@@ -132,5 +165,6 @@ export function useAudioPlayback(options: AudioPlaybackOptions = {}): AudioPlayb
     isPlayingRef,
     audioQueueRef,
     soundRef,
+    isStoppedRef,
   };
 }
